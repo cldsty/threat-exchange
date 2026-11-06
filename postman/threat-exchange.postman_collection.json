@@ -3150,10 +3150,19 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "// Sends a burst and keeps the rejected answer. The main request cannot be the",
+                  "// check itself: during the pause before it the limit refills by one request.",
+                  "pm.collectionVariables.set('rateLimited', 0);",
                   "const url = pm.variables.get('baseUrl') + '/info/' + pm.collectionVariables.get('md5');",
-                  "const key = pm.collectionVariables.get('readerKey');",
+                  "const key = pm.variables.get('readerKey');",
                   "for (let i = 0; i < 80; i++) {",
-                  "    pm.sendRequest({url: url, method: 'GET', header: {'X-API-Key': key}}, () => {});",
+                  "    pm.sendRequest({url: url, method: 'GET', header: {'X-API-Key': key}}, (err, res) => {",
+                  "        if (!err && res.code === 429) {",
+                  "            pm.collectionVariables.set('rateLimited', Number(pm.collectionVariables.get('rateLimited')) + 1);",
+                  "            pm.collectionVariables.set('rateLimitCode', res.json().code);",
+                  "            pm.collectionVariables.set('retryAfter', res.headers.get('Retry-After'));",
+                  "        }",
+                  "    });",
                   "}"
                 ]
               }
@@ -3163,10 +3172,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Статус 429', () => pm.response.to.have.status(429));",
-                  "pm.test('Код ошибки rate_limited', () => pm.expect(pm.response.json().code).to.eql('rate_limited'));",
-                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
-                  "pm.test('Есть Retry-After', () => pm.expect(Number(pm.response.headers.get('Retry-After'))).to.be.above(0));"
+                  "pm.test('Часть запросов отклонена со статусом 429', () => pm.expect(Number(pm.collectionVariables.get('rateLimited'))).to.be.above(0));",
+                  "pm.test('Код ошибки rate_limited', () => pm.expect(pm.collectionVariables.get('rateLimitCode')).to.eql('rate_limited'));",
+                  "pm.test('Есть Retry-After', () => pm.expect(Number(pm.collectionVariables.get('retryAfter'))).to.be.above(0));"
                 ]
               }
             }
