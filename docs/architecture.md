@@ -7,23 +7,28 @@ flowchart LR
     client([Клиент]) -->|HTTPS| http
 
     subgraph app[Сервис]
+        api["internal/api<br/>сгенерированный код"]
         http["transport/httpapi<br/>middleware, обработчики"]
         service["service<br/>сценарии"]
         repo["storage/postgres<br/>репозиторий"]
         domain["domain/threat<br/>сущность, правила"]
 
+        api -.-> http
         http --> service
         service --> repo
         service --> domain
     end
 
     repo -->|TLS| db[(PostgreSQL)]
-    spec[/"api/openapi.yaml"/] -.->|генерация| http
+    spec[/"api/openapi.yaml"/] -.->|генерация| api
 ```
 
-Зависимости направлены к домену: он не знает ни об HTTP, ни о БД. Сервис зависит от
-интерфейса `Repository`, а HTTP-слой от интерфейса `ThreatService`, поэтому каждый слой
-тестируется отдельно.
+Сплошные стрелки показывают ход запроса, пунктирные - код из спецификации.
+
+Импорты в коде устроены иначе, чем ход запроса: `domain` ни от кого не зависит, его импортируют
+`httpapi`, `service` и `postgres`. Интерфейс `Repository` объявлен в `service`, а `postgres`
+его реализует, поэтому `service` не знает о PostgreSQL. `httpapi` зависит от своего интерфейса
+`ThreatService`, поэтому каждый слой тестируется отдельно.
 
 | Пакет | За что отвечает |
 |---|---|
