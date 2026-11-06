@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -59,6 +60,13 @@ func NewPool(ctx context.Context, c PoolConfig) (*pgxpool.Pool, error) {
 	}
 	if c.ConnectTimeout > 0 {
 		cfg.ConnConfig.ConnectTimeout = c.ConnectTimeout
+		// pgx applies ConnectTimeout to connecting, but not to resolving the
+		// host name, which is what takes long when a DNS name goes away.
+		cfg.ConnConfig.LookupFunc = func(ctx context.Context, host string) ([]string, error) {
+			ctx, cancel := context.WithTimeout(ctx, c.ConnectTimeout)
+			defer cancel()
+			return net.DefaultResolver.LookupHost(ctx, host)
+		}
 	}
 	cfg.ConnConfig.RuntimeParams["application_name"] = "threat-exchange"
 
