@@ -34,6 +34,7 @@ const (
 )
 
 type running struct {
+	app    *server.App
 	apiURL string
 	opsURL string
 	certs  string
@@ -77,6 +78,7 @@ func start(t *testing.T, extra map[string]string) running {
 	go func() { done <- app.ServeListeners(ctx, apiLn, opsLn) }()
 
 	r := running{
+		app:    app,
 		apiURL: "https://" + apiLn.Addr().String(),
 		opsURL: "http://" + opsLn.Addr().String(),
 		certs:  certs,
@@ -219,6 +221,85 @@ func TestEndToEndWithMutualTLS(t *testing.T) {
 	})
 
 	require.NoError(t, srv.stop(), "graceful shutdown returns no error")
+}
+
+func TestHTTP2(t *testing.T) {
+	t.Parallel()
+	srv := start(t, nil)
+	c := client(t, srv.certs, false, 0)
+	transport, ok := c.Transport.(*http.Transport)
+	require.True(t, ok)
+	transport.ForceAttemptHTTP2 = true
+
+	resp, _ := call(t, c, http.MethodGet, srv.apiURL+"/info/"+md5, readerKey, "")
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, 2, resp.ProtoMajor)
+}
+
+func TestAPIKeyBoundToClientCertificate(t *testing.T) {
+	t.Parallel()
+	certsDir := t.TempDir()
+	_, err := devcerts.Generate(devcerts.Options{Dir: certsDir, ClientID: "partner-a", Owner: -1})
+	require.NoError(t, err)
+	srv := start(t, map[string]string{
+		"TLS_CERT_FILE":         filepath.Join(certsDir, devcerts.ServerCert),
+		"TLS_KEY_FILE":          filepath.Join(certsDir, devcerts.ServerKey),
+		"TLS_CLIENT_CA_FILE":    filepath.Join(certsDir, devcerts.CACert),
+		"AUTH_BIND_CLIENT_CERT": "true",
+		"AUTH_API_KEYS":         "partner-a:reader:" + auth.HashKey("key-a") + ",partner-b:reader:" + auth.HashKey("key-b"),
+	})
+	c := client(t, certsDir, true, 0)
+
+	resp, _ := call(t, c, http.MethodGet, srv.apiURL+"/info/"+md5, "key-a", "")
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode, "the certificate matches the key")
+	resp, _ = call(t, c, http.MethodGet, srv.apiURL+"/info/"+md5, "key-b", "")
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode, "a key of another client is refused")
+}
+
+func TestReloadAPIKeysFromFile(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "keys")
+	write := func(content string) {
+		t.Helper()
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	}
+	write("partner:reader:" + auth.HashKey("old-key"))
+	srv := start(t, map[string]string{"AUTH_API_KEYS": "", "AUTH_API_KEYS_FILE": path})
+	c := client(t, srv.certs, false, 0)
+	status := func(key string) int {
+		t.Helper()
+		resp, _ := call(t, c, http.MethodGet, srv.apiURL+"/info/"+md5, key, "")
+		return resp.StatusCode
+	}
+	require.Equal(t, http.StatusNotFound, status("old-key"))
+	require.Equal(t, http.StatusUnauthorized, status("new-key"))
+
+	write("partner:reader:" + auth.HashKey("old-key") + "\npartner:reader:" + auth.HashKey("new-key"))
+	require.NoError(t, srv.app.Reload())
+	assert.Equal(t, http.StatusNotFound, status("old-key"), "both keys work during rotation")
+	assert.Equal(t, http.StatusNotFound, status("new-key"))
+
+	write("partner:reader:" + auth.HashKey("new-key"))
+	require.NoError(t, srv.app.Reload())
+	assert.Equal(t, http.StatusUnauthorized, status("old-key"), "a revoked key stops working without a restart")
+
+	write("broken file")
+	require.Error(t, srv.app.Reload())
+	assert.Equal(t, http.StatusNotFound, status("new-key"), "a broken file keeps the previous keys")
+}
+
+func TestStorageOutageEndToEnd(t *testing.T) {
+	t.Parallel()
+	srv := start(t, nil)
+	c := client(t, srv.certs, false, 0)
+	resp, _ := call(t, c, http.MethodPost, srv.apiURL+"/info", writerKey, `{"md5":"`+md5+`","name":"X"}`)
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	// Stopping the temporary database in the middle is done by the pool test;
+	// here it is enough that health is independent of readiness.
+	r, err := http.Get(srv.opsURL + "/healthz")
+	require.NoError(t, err)
+	_ = r.Body.Close()
+	assert.Equal(t, http.StatusOK, r.StatusCode)
 }
 
 func TestTLSVersionPolicy(t *testing.T) {

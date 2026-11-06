@@ -53,6 +53,46 @@ func TestGenerateProducesVerifiableChain(t *testing.T) {
 	}
 }
 
+func TestGenerateDatabaseCertificate(t *testing.T) {
+	t.Parallel()
+	dir, dbDir := t.TempDir(), t.TempDir()
+	created, err := devcerts.Generate(devcerts.Options{
+		Dir: dir, DBDir: dbDir, DBHosts: []string{"db"}, Owner: -1, DBOwner: -1,
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+
+	caPEM, err := os.ReadFile(filepath.Join(dir, devcerts.CACert))
+	require.NoError(t, err)
+	roots := x509.NewCertPool()
+	require.True(t, roots.AppendCertsFromPEM(caPEM))
+	db, err := tls.LoadX509KeyPair(filepath.Join(dbDir, devcerts.DBCert), filepath.Join(dbDir, devcerts.DBKey))
+	require.NoError(t, err)
+	_, err = db.Leaf.Verify(x509.VerifyOptions{DNSName: "db", Roots: roots, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}})
+	assert.NoError(t, err)
+
+	// All certificates share one CA whose key is not kept, so losing the
+	// database certificate regenerates the whole set.
+	require.NoError(t, os.Remove(filepath.Join(dbDir, devcerts.DBKey)))
+	created, err = devcerts.Generate(devcerts.Options{
+		Dir: dir, DBDir: dbDir, DBHosts: []string{"db"}, IfMissing: true, Owner: -1, DBOwner: -1,
+	})
+	require.NoError(t, err)
+	assert.True(t, created)
+	_, err = os.Stat(filepath.Join(dbDir, devcerts.DBKey))
+	assert.NoError(t, err)
+}
+
+func TestGenerateReplacesExpiredCertificates(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, err := devcerts.Generate(devcerts.Options{Dir: dir, Validity: time.Nanosecond, Owner: -1})
+	require.NoError(t, err)
+	created, err := devcerts.Generate(devcerts.Options{Dir: dir, IfMissing: true, Owner: -1})
+	require.NoError(t, err)
+	assert.True(t, created, "an expired set is not kept")
+}
+
 func TestGenerateIfMissing(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

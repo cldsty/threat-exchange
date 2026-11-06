@@ -171,12 +171,16 @@ func cmdDevcerts(args []string, stdout io.Writer) error {
 	ifMissing := fs.Bool("if-missing", false, "do nothing if certificates already exist")
 	owner := fs.Int("owner", -1, "uid/gid to own the server key (e.g. 65532 for the distroless nonroot user)")
 	validity := fs.Duration("validity", 90*24*time.Hour, "certificate validity")
+	dbDir := fs.String("db-dir", "", "also write a certificate for PostgreSQL into this directory")
+	dbHosts := fs.String("db-hosts", "db", "comma-separated DNS names of the PostgreSQL server")
+	dbOwner := fs.Int("db-owner", -1, "uid/gid to own the PostgreSQL key (e.g. 70 in postgres:alpine images)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	created, err := devcerts.Generate(devcerts.Options{
 		Dir: *dir, Hosts: strings.Split(*hosts, ","), ClientID: *client,
 		Validity: *validity, IfMissing: *ifMissing, Owner: *owner,
+		DBDir: *dbDir, DBHosts: strings.Split(*dbHosts, ","), DBOwner: *dbOwner,
 	})
 	if err != nil {
 		return err
@@ -205,7 +209,9 @@ func cmdHealthcheck() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+net.JoinHostPort(host, port)+"/readyz", nil)
+	// Liveness, not readiness: restarting the service would not fix a database
+	// outage, and restarting every replica at once would only make it worse.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+net.JoinHostPort(host, port)+"/healthz", nil)
 	if err != nil {
 		return err
 	}
@@ -215,7 +221,7 @@ func cmdHealthcheck() error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("not ready: %s", resp.Status)
+		return fmt.Errorf("unhealthy: %s", resp.Status)
 	}
 	return nil
 }

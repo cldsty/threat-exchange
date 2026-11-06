@@ -2,6 +2,10 @@ package auth_test
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -49,7 +53,7 @@ func TestKeyStoreAuthenticate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			r := httptest.NewRequest("GET", "/", nil)
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
 			if tt.key != "" {
 				r.Header.Set(auth.HeaderAPIKey, tt.key)
 			}
@@ -71,7 +75,7 @@ func TestParseKeyStoreErrors(t *testing.T) {
 		"bad id":           "bad id:reader:" + h,
 		"short digest":     "id:reader:abc",
 		"non-hex digest":   "id:reader:" + strings.Repeat("z", 64),
-		"duplicate id":     "a:reader:" + h + ",a:writer:" + auth.HashKey("other"),
+		"role mismatch":    "a:reader:" + h + ",a:writer:" + auth.HashKey("other"),
 		"duplicate digest": "a:reader:" + h + ",b:writer:" + h,
 	}
 	for name, spec := range tests {
@@ -81,6 +85,61 @@ func TestParseKeyStoreErrors(t *testing.T) {
 			assert.Error(t, err)
 		})
 	}
+}
+
+func request(key string, peerCN ...string) *http.Request {
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set(auth.HeaderAPIKey, key)
+	for _, cn := range peerCN {
+		r.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{Subject: pkix.Name{CommonName: cn}}}}
+	}
+	return r
+}
+
+func TestKeyRotationUnderOneIdentity(t *testing.T) {
+	t.Parallel()
+	ks, err := auth.ParseKeyStore("partner:writer:" + auth.HashKey("old") + ",partner:writer:" + auth.HashKey("new"))
+	require.NoError(t, err)
+	for _, key := range []string{"old", "new"} {
+		p, err := ks.Authenticate(request(key))
+		require.NoError(t, err)
+		assert.Equal(t, "partner", p.ID)
+	}
+}
+
+func TestReloadable(t *testing.T) {
+	t.Parallel()
+	first, err := auth.ParseKeyStore("a:reader:" + auth.HashKey("first"))
+	require.NoError(t, err)
+	second, err := auth.ParseKeyStore("a:reader:" + auth.HashKey("second") + ",b:reader:" + auth.HashKey("third"))
+	require.NoError(t, err)
+
+	r := auth.NewReloadable(first)
+	_, err = r.Authenticate(request("first"))
+	require.NoError(t, err)
+
+	r.Store(second)
+	assert.Equal(t, 2, r.Len())
+	_, err = r.Authenticate(request("first"))
+	assert.ErrorIs(t, err, auth.ErrInvalidCredentials, "a removed key stops working")
+	_, err = r.Authenticate(request("second"))
+	assert.NoError(t, err)
+}
+
+func TestCertBound(t *testing.T) {
+	t.Parallel()
+	ks, err := auth.ParseKeyStore("partner-a:reader:" + auth.HashKey("k"))
+	require.NoError(t, err)
+	bound := auth.CertBound{Next: ks}
+
+	_, err = bound.Authenticate(request("k", "partner-a"))
+	assert.NoError(t, err)
+	_, err = bound.Authenticate(request("k", "partner-b"))
+	assert.ErrorIs(t, err, auth.ErrInvalidCredentials, "the key belongs to another client")
+	_, err = bound.Authenticate(request("k"))
+	assert.ErrorIs(t, err, auth.ErrInvalidCredentials, "no client certificate")
+	_, err = bound.Authenticate(request("wrong", "partner-a"))
+	assert.ErrorIs(t, err, auth.ErrInvalidCredentials)
 }
 
 func TestRoles(t *testing.T) {

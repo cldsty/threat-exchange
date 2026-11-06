@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -245,11 +246,45 @@ func TestMalformedRequests(t *testing.T) {
 	r := e.do(http.MethodPost, "/info", writerKey, `{"md5":`)
 	assert.Equal(t, http.StatusBadRequest, r.StatusCode)
 
-	r = e.do(http.MethodPost, "/info", writerKey, "")
+	r = e.do(http.MethodPost, "/info", writerKey, "", "Content-Type", "application/json")
 	assert.Equal(t, http.StatusBadRequest, r.StatusCode, "body is required")
 
-	r = e.do(http.MethodPost, "/info", writerKey, `{"md5":"`+md5+`","name":"X"}`, "Content-Type", "text/plain")
-	assert.Equal(t, http.StatusBadRequest, r.StatusCode)
+	for _, body := range []string{
+		`{"md5":"` + md5 + `","name":"X"}{"junk":1}`,
+		`{"md5":"` + md5 + `","name":"X"} trailing`,
+	} {
+		r = e.do(http.MethodPost, "/info", writerKey, body)
+		assert.Equal(t, http.StatusBadRequest, r.StatusCode, "data after the JSON value is rejected: %s", body)
+	}
+	assert.Equal(t, http.StatusNotFound, e.do(http.MethodGet, "/info/"+md5, readerKey, "").StatusCode, "nothing was stored")
+
+	r = e.do(http.MethodPost, "/info", writerKey, `{"md5":"`+md5+`","name":"X"}`, "Content-Type", "application/json; charset=utf-8")
+	assert.Equal(t, http.StatusCreated, r.StatusCode, "media type parameters are allowed")
+}
+
+func TestUnsupportedMediaType(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	body := `{"md5":"` + md5 + `","name":"X"}`
+	for _, contentType := range []string{"text/plain", "application/xml", "not a media type"} {
+		r := e.do(http.MethodPost, "/info", writerKey, body, "Content-Type", contentType)
+		assert.Equal(t, http.StatusUnsupportedMediaType, r.StatusCode, contentType)
+		assert.Equal(t, api.ErrorResponseCodeUnsupportedMediaType, r.errorBody(t).Code)
+	}
+	r := e.do(http.MethodPut, "/info/"+md5, writerKey, `{"name":"X"}`, "Content-Type", "text/plain")
+	assert.Equal(t, http.StatusUnsupportedMediaType, r.StatusCode)
+	r = e.do(http.MethodPost, "/info", readerKey, body, "Content-Type", "text/plain")
+	assert.Equal(t, http.StatusForbidden, r.StatusCode, "authorization comes first")
+}
+
+func TestHeadUsesGetRoute(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	e.create(`{"md5":"` + md5 + `","name":"X"}`)
+	r := e.do(http.MethodHead, "/info/"+md5, readerKey, "")
+	assert.Equal(t, http.StatusOK, r.StatusCode)
+	assert.Equal(t, `"1"`, r.Header.Get("ETag"))
+	assert.Equal(t, http.StatusUnauthorized, e.do(http.MethodHead, "/info/"+md5, "", "").StatusCode)
 }
 
 func TestGetErrors(t *testing.T) {
@@ -277,6 +312,11 @@ func TestRoutingErrors(t *testing.T) {
 	r = e.do(http.MethodDelete, "/info/"+md5, writerKey, "")
 	assert.Equal(t, http.StatusMethodNotAllowed, r.StatusCode)
 	assert.Equal(t, api.ErrorResponseCodeMethodNotAllowed, r.errorBody(t).Code)
+	assert.Equal(t, "GET, HEAD, PUT", r.Header.Get("Allow"))
+
+	r = e.do(http.MethodDelete, "/info", writerKey, "")
+	assert.Equal(t, http.StatusMethodNotAllowed, r.StatusCode)
+	assert.Equal(t, "POST", r.Header.Get("Allow"))
 }
 
 func TestReplace(t *testing.T) {
@@ -547,6 +587,23 @@ func TestPanicIsRecovered(t *testing.T) {
 	assert.InDelta(t, 1, testutil.ToFloat64(
 		e.metrics.RequestsTotal.WithLabelValues("GET", "GET /info/{md5}", "500")), 0, "panics count as 500s")
 	assert.Contains(t, e.logs.String(), `"msg":"http request"`, "and reach the access log")
+}
+
+type unavailableService struct{ httpapi.ThreatService }
+
+func (unavailableService) Get(context.Context, string) (threat.Threat, error) {
+	return threat.Threat{}, fmt.Errorf("select: %w: dial tcp db:5432", threat.ErrUnavailable)
+}
+
+func TestStorageOutageIsRetryable(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, func(c *httpapi.Config) { c.Service = unavailableService{} })
+	r := e.do(http.MethodGet, "/info/"+md5, readerKey, "")
+	assert.Equal(t, http.StatusServiceUnavailable, r.StatusCode)
+	assert.Equal(t, "5", r.Header.Get("Retry-After"))
+	assert.Equal(t, api.ErrorResponseCodeUnavailable, r.errorBody(t).Code)
+	assert.NotContains(t, string(r.body), "db:5432")
+	assert.Contains(t, e.logs.String(), "db:5432", "details go to the log")
 }
 
 func TestInternalErrorsAreNotLeaked(t *testing.T) {

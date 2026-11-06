@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -283,6 +284,16 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	pool, _ := pgtest.NewDB(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	require.NoError(t, postgres.Migrate(context.Background(), pool, logger), "second run is a no-op")
+}
+
+func TestUnreachableDatabaseIsTemporary(t *testing.T) {
+	t.Parallel()
+	pool, err := pgxpool.New(context.Background(), "postgres://u:p@127.0.0.1:1/x?connect_timeout=1")
+	require.NoError(t, err, "the pool connects lazily")
+	defer pool.Close()
+
+	_, err = postgres.NewThreatRepository(pool).Get(context.Background(), md5)
+	assert.ErrorIs(t, err, threat.ErrUnavailable)
 }
 
 func TestNewPoolDoesNotLeakPassword(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -15,6 +16,10 @@ import (
 	"threat-exchange/internal/api"
 	"threat-exchange/internal/domain/threat"
 )
+
+// retryAfterUnavailable is the Retry-After value in seconds when the storage is
+// unavailable: long enough for a database failover or restart to progress.
+const retryAfterUnavailable = 5
 
 const hashConflictDetails = "One file cannot have two MD5 digests: check the hashes of this record and of the existing one"
 
@@ -33,6 +38,8 @@ const (
 	msgForbidden       = "Insufficient permissions"
 	msgRateLimited     = "Too many requests"
 	msgTooLarge        = "Request body too large"
+	msgMediaType       = "Unsupported media type"
+	msgUnavailable     = "Service temporarily unavailable"
 )
 
 func errorBody(ctx context.Context, code api.ErrorResponseCode, message, details string, fields []api.FieldError) api.ErrorResponse {
@@ -67,7 +74,7 @@ func fieldErrors(ve *threat.ValidationError) []api.FieldError {
 
 // validationErrorHandler converts errors of the OpenAPI request validator
 // into ErrorResponse. It implements nethttpmiddleware.ErrorHandlerWithOpts.
-func validationErrorHandler(logger *slog.Logger) func(w http.ResponseWriter, r *http.Request, err error, statusCode int) {
+func validationErrorHandler(logger *slog.Logger, mux *http.ServeMux) func(w http.ResponseWriter, r *http.Request, err error, statusCode int) {
 	return func(w http.ResponseWriter, r *http.Request, err error, statusCode int) {
 		var tooLarge *http.MaxBytesError
 		switch {
@@ -76,6 +83,7 @@ func validationErrorHandler(logger *slog.Logger) func(w http.ResponseWriter, r *
 		case errors.Is(err, routers.ErrPathNotFound):
 			writeError(w, r, http.StatusNotFound, api.ErrorResponseCodeNotFound, "Resource not found", "", nil)
 		case errors.Is(err, routers.ErrMethodNotAllowed):
+			w.Header().Set("Allow", strings.Join(allowedMethods(mux, r), ", "))
 			writeError(w, r, http.StatusMethodNotAllowed, api.ErrorResponseCodeMethodNotAllowed, "Method not allowed", "", nil)
 		case statusCode >= 500:
 			logger.ErrorContext(r.Context(), "request validator failed", slog.Any("error", err))
@@ -84,6 +92,19 @@ func validationErrorHandler(logger *slog.Logger) func(w http.ResponseWriter, r *
 			writeError(w, r, http.StatusBadRequest, api.ErrorResponseCodeValidationFailed, msgValidation, "", specFieldErrors(err))
 		}
 	}
+}
+
+// allowedMethods lists the methods that have a route for the path of r.
+func allowedMethods(mux *http.ServeMux, r *http.Request) []string {
+	var out []string
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut} {
+		probe := r.Clone(r.Context())
+		probe.Method = method
+		if _, pattern := mux.Handler(probe); pattern != "" {
+			out = append(out, method)
+		}
+	}
+	return out
 }
 
 // specFieldErrors extracts per-field problems from kin-openapi errors without
@@ -161,6 +182,11 @@ func requestErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 func responseErrorHandler(logger *slog.Logger) func(w http.ResponseWriter, r *http.Request, err error) {
 	return func(w http.ResponseWriter, r *http.Request, err error) {
 		logger.ErrorContext(r.Context(), "request failed", slog.Any("error", err))
+		if errors.Is(err, threat.ErrUnavailable) {
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfterUnavailable))
+			writeError(w, r, http.StatusServiceUnavailable, api.ErrorResponseCodeUnavailable, msgUnavailable, "", nil)
+			return
+		}
 		writeError(w, r, http.StatusInternalServerError, api.ErrorResponseCodeInternal, msgInternal, "", nil)
 	}
 }

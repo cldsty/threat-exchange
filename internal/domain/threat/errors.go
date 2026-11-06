@@ -18,6 +18,9 @@ var (
 	// ErrPreconditionRequired means the record was last modified by another
 	// actor, so replacing it requires a specific expected version.
 	ErrPreconditionRequired = errors.New("threat version is required to replace a record of another actor")
+	// ErrUnavailable means the storage is temporarily unreachable or overloaded
+	// and the operation can be retried.
+	ErrUnavailable = errors.New("storage is unavailable")
 	// ErrHashConflict means the SHA-256 belongs to a threat with another MD5.
 	// One file cannot have two MD5 digests, so one of the records is wrong.
 	ErrHashConflict = errors.New("sha256 belongs to another threat")

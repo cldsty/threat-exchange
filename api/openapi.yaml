@@ -35,6 +35,10 @@ info:
 
     Организация, у которой есть данные об уже известном MD5, получает `409`
     на `POST`, читает запись, объединяет данные и отправляет `PUT` с `If-Match`.
+
+    ## HTTP
+    `HEAD` поддерживается для всех адресов с `GET`. На метод, не предусмотренный
+    для адреса, возвращается `405` с заголовком `Allow`.
   version: 1.2.0
   license:
     name: Proprietary
@@ -81,6 +85,8 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
     put:
       tags: [threats]
@@ -126,12 +132,16 @@ paths:
           $ref: '#/components/responses/PreconditionFailed'
         '413':
           $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '428':
           $ref: '#/components/responses/PreconditionRequired'
         '429':
           $ref: '#/components/responses/TooManyRequests'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   /info:
     post:
@@ -174,10 +184,14 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '413':
           $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '429':
           $ref: '#/components/responses/TooManyRequests'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
 components:
   securitySchemes:
@@ -256,6 +270,23 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
     PayloadTooLarge:
       description: Тело запроса превышает допустимый размер
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UnsupportedMediaType:
+      description: Тело запроса должно иметь тип `application/json`
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ServiceUnavailable:
+      description: Хранилище временно недоступно, запрос можно повторить
+      headers:
+        Retry-After:
+          description: Через сколько секунд можно повторить запрос
+          schema:
+            type: integer
       content:
         application/json:
           schema:
@@ -560,6 +591,8 @@ components:
             - precondition_failed
             - precondition_required
             - payload_too_large
+            - unsupported_media_type
+            - unavailable
             - rate_limited
             - internal
           example: not_found

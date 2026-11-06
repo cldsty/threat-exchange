@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -59,7 +61,7 @@ func (r *ThreatRepository) Get(ctx context.Context, md5 string) (threat.Threat, 
 		return threat.Threat{}, threat.ErrNotFound
 	}
 	if err != nil {
-		return threat.Threat{}, fmt.Errorf("select threat: %w", err)
+		return threat.Threat{}, wrapError("select threat", err)
 	}
 	return t, nil
 }
@@ -93,7 +95,7 @@ func (r *ThreatRepository) Replace(ctx context.Context, md5 string, a threat.Att
 	// No row updated: the record does not exist or the precondition failed.
 	var exists bool
 	if err := r.pool.QueryRow(ctx, existsThreatSQL, md5).Scan(&exists); err != nil {
-		return threat.Threat{}, fmt.Errorf("check threat existence: %w", err)
+		return threat.Threat{}, wrapError("check threat existence", err)
 	}
 	switch {
 	case !exists:
@@ -105,13 +107,43 @@ func (r *ThreatRepository) Replace(ctx context.Context, md5 string, a threat.Att
 	}
 }
 
-// writeError converts violations of the SHA-256 uniqueness to the domain error.
+// wrapError adds context to err and marks temporary failures with
+// threat.ErrUnavailable.
+func wrapError(op string, err error) error {
+	if isTemporary(err) {
+		return fmt.Errorf("%s: %w: %w", op, threat.ErrUnavailable, err)
+	}
+	return fmt.Errorf("%s: %w", op, err)
+}
+
+// writeError is wrapError for writes: it also converts a violation of the
+// SHA-256 uniqueness to the domain error.
 func writeError(op string, err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.ConstraintName == sha256UniqueConstraint {
 		return threat.ErrHashConflict
 	}
-	return fmt.Errorf("%s: %w", op, err)
+	return wrapError(op, err)
+}
+
+// isTemporary reports whether err means the database cannot serve the request
+// right now, as opposed to rejecting it. A cancelled request is not temporary:
+// the client has gone away.
+func isTemporary(err error) bool {
+	var (
+		connErr *pgconn.ConnectError
+		netErr  net.Error
+		pgErr   *pgconn.PgError
+	)
+	switch {
+	case errors.As(err, &connErr), errors.As(err, &netErr), errors.Is(err, context.DeadlineExceeded):
+		return true
+	case errors.As(err, &pgErr):
+		// Classes 08 (connection), 53 (insufficient resources) and 57 (operator
+		// intervention, including statement_timeout and server shutdown).
+		return strings.HasPrefix(pgErr.Code, "08") || strings.HasPrefix(pgErr.Code, "53") || strings.HasPrefix(pgErr.Code, "57")
+	}
+	return false
 }
 
 func scanThreat(row pgx.Row) (threat.Threat, error) {

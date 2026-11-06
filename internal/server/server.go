@@ -38,6 +38,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		MaxConnLifetime:  cfg.DB.MaxConnLifetime,
 		MaxConnIdleTime:  cfg.DB.MaxConnIdleTime,
 		StatementTimeout: cfg.DB.StatementTimeout,
+		ConnectTimeout:   cfg.DB.ConnectTimeout,
 	})
 	if err != nil {
 		return fmt.Errorf("connect to database: %w", err)
@@ -65,6 +66,7 @@ type App struct {
 	api      *http.Server
 	ops      *http.Server
 	reloader *certReloader
+	keys     *auth.Reloadable
 	limiters []*ratelimit.Limiter
 	ready    atomic.Bool
 }
@@ -80,11 +82,16 @@ func New(cfg config.Config, pool *pgxpool.Pool, logger *slog.Logger) (*App, erro
 		return nil, err
 	}
 	metrics := observability.NewMetrics()
-	a := &App{cfg: cfg, logger: logger, pool: pool}
+	a := &App{cfg: cfg, logger: logger, pool: pool, keys: auth.NewReloadable(keys)}
+
+	var authenticator auth.Authenticator = a.keys
+	if cfg.Auth.BindClientCert {
+		authenticator = auth.CertBound{Next: authenticator}
+	}
 
 	hc := httpapi.Config{
 		Service:       service.New(postgres.NewThreatRepository(pool), nil),
-		Authenticator: keys,
+		Authenticator: authenticator,
 		ClientIP:      httpapi.NewClientIP(proxies),
 		MaxBodyBytes:  cfg.HTTP.MaxBodyBytes,
 		Logger:        logger,
@@ -178,7 +185,7 @@ func (a *App) ServeListeners(ctx context.Context, apiLn, opsLn net.Listener) err
 	for _, l := range a.limiters {
 		go l.Run(ctx)
 	}
-	if a.reloader != nil {
+	if a.reloader != nil || a.cfg.Auth.APIKeysFile != "" {
 		// Register before serving so that an early SIGHUP is never handled
 		// by the default action (process termination).
 		hup := make(chan os.Signal, 1)
@@ -196,7 +203,9 @@ func (a *App) ServeListeners(ctx context.Context, apiLn, opsLn net.Listener) err
 		if a.api.TLSConfig != nil {
 			a.logger.Info("API server listening (TLS)", slog.String("addr", apiLn.Addr().String()),
 				slog.Bool("mtls", a.api.TLSConfig.ClientAuth == tls.RequireAndVerifyClientCert))
-			errc <- serveErr(a.api.Serve(tls.NewListener(apiLn, a.api.TLSConfig)))
+			// ServeTLS, unlike Serve on a TLS listener, also enables HTTP/2.
+			// The certificate comes from TLSConfig.GetCertificate.
+			errc <- serveErr(a.api.ServeTLS(apiLn, "", ""))
 			return
 		}
 		a.logger.Warn("API server listening WITHOUT TLS; use only behind a TLS-terminating proxy",
@@ -226,13 +235,39 @@ func (a *App) reloadOnSignal(ctx context.Context, ch <-chan os.Signal) {
 		case <-ctx.Done():
 			return
 		case <-ch:
-			if err := a.reloader.Reload(); err != nil {
-				a.logger.Error("TLS certificate reload failed; keeping the previous one", slog.Any("error", err))
+			if err := a.Reload(); err != nil {
+				a.logger.Error("reload failed; keeping the previous values for the failed parts", slog.Any("error", err))
 				continue
 			}
-			a.logger.Info("TLS certificate reloaded")
+			a.logger.Info("reload completed", slog.Int("api_keys", a.keys.Len()))
 		}
 	}
+}
+
+// Reload rereads the TLS certificate and, when they come from a file, the API
+// keys. A part that fails to load keeps its previous value. It runs on SIGHUP.
+func (a *App) Reload() error {
+	var errs []error
+	if a.reloader != nil {
+		errs = append(errs, a.reloader.Reload())
+	}
+	if path := a.cfg.Auth.APIKeysFile; path != "" {
+		errs = append(errs, a.reloadKeys(path))
+	}
+	return errors.Join(errs...)
+}
+
+func (a *App) reloadKeys(path string) error {
+	spec, err := os.ReadFile(path) //nolint:gosec // path comes from trusted configuration
+	if err != nil {
+		return fmt.Errorf("read API keys: %w", err)
+	}
+	keys, err := auth.ParseKeyStore(string(spec))
+	if err != nil {
+		return fmt.Errorf("load API keys: %w", err)
+	}
+	a.keys.Store(keys)
+	return nil
 }
 
 func serveErr(err error) error {

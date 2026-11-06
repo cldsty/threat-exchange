@@ -31,6 +31,8 @@ type PoolConfig struct {
 	// StatementTimeout is applied server-side to every statement so that a
 	// runaway query cannot hold a connection forever.
 	StatementTimeout time.Duration
+	// ConnectTimeout bounds one attempt to connect to the server.
+	ConnectTimeout time.Duration
 }
 
 // NewPool creates a connection pool and verifies connectivity.
@@ -54,6 +56,9 @@ func NewPool(ctx context.Context, c PoolConfig) (*pgxpool.Pool, error) {
 	}
 	if c.StatementTimeout > 0 {
 		cfg.ConnConfig.RuntimeParams["statement_timeout"] = fmt.Sprint(c.StatementTimeout.Milliseconds())
+	}
+	if c.ConnectTimeout > 0 {
+		cfg.ConnConfig.ConnectTimeout = c.ConnectTimeout
 	}
 	cfg.ConnConfig.RuntimeParams["application_name"] = "threat-exchange"
 

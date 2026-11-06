@@ -81,6 +81,9 @@ type DB struct {
 	MaxConnLifetime  time.Duration `env:"MAX_CONN_LIFETIME" envDefault:"30m"`
 	MaxConnIdleTime  time.Duration `env:"MAX_CONN_IDLE_TIME" envDefault:"5m"`
 	StatementTimeout time.Duration `env:"STATEMENT_TIMEOUT" envDefault:"5s"`
+	// ConnectTimeout bounds one connection attempt, so that a request fails
+	// quickly with 503 when the database is down.
+	ConnectTimeout time.Duration `env:"CONNECT_TIMEOUT" envDefault:"2s"`
 }
 
 // Auth configures API key authentication.
@@ -89,6 +92,9 @@ type Auth struct {
 	// newlines; APIKeysFile points to a file with the same content.
 	APIKeys     string `env:"API_KEYS"`
 	APIKeysFile string `env:"API_KEYS_FILE"`
+	// BindClientCert requires the client certificate Common Name to equal the
+	// ID of the presented API key. It needs TLS_CLIENT_CA_FILE.
+	BindClientCert bool `env:"BIND_CLIENT_CERT" envDefault:"false"`
 }
 
 // RateLimit configures request rate limiting.
@@ -178,6 +184,9 @@ func (c Config) Validate() error {
 	errs := []error{c.validateLog(), c.validateDB()}
 	if c.Auth.APIKeys == "" {
 		errs = append(errs, errors.New("AUTH_API_KEYS (or AUTH_API_KEYS_FILE) is required"))
+	}
+	if c.Auth.BindClientCert && c.TLS.ClientCAFile == "" {
+		errs = append(errs, errors.New("AUTH_BIND_CLIENT_CERT requires TLS_CLIENT_CA_FILE"))
 	}
 	if c.TLS.Enabled {
 		if c.TLS.CertFile == "" || c.TLS.KeyFile == "" {

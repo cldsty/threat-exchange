@@ -1,13 +1,13 @@
 # Local environment: PostgreSQL + migrations + the service over HTTPS.
 #
-#   docker compose up --build -d
+#   docker compose up --build -d --wait
 #   curl --cacert deploy/certs/ca.crt -H "X-API-Key: demo-reader-key-change-me" \
 #        https://localhost:8443/info/d41d8cd98f00b204e9800998ecf8427e
 #
-# The demo API keys and the database password below are for local use only.
-# For any shared environment generate keys with `threat-exchange keygen`,
-# pass secrets via files (AUTH_API_KEYS_FILE, DB_URL_FILE) and use
-# certificates issued by your PKI.
+# The demo API keys and the database passwords below are for local use only, so
+# all ports are published on localhost only. For any shared environment generate
+# keys with `threat-exchange keygen`, pass secrets via files (AUTH_API_KEYS_FILE,
+# DB_URL_FILE) and use certificates issued by your PKI.
 
 name: threat-exchange
 
@@ -21,15 +21,30 @@ x-app-image: &app-image
 services:
   db:
     image: postgres:17-alpine
+    # TLS between the service and the database, with a key only PostgreSQL can read.
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/db-certs/db.crt
+      - -c
+      - ssl_key_file=/db-certs/db.key
     environment:
       POSTGRES_DB: threats
       POSTGRES_USER: threats
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-threats-dev-password}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-threats-app-dev-password}
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - db-certs:/db-certs:ro
+      - ./deploy/postgres:/docker-entrypoint-initdb.d:ro
     # Published on localhost only, for integration tests and debugging.
     ports:
       - "127.0.0.1:${DB_PORT:-5432}:5432"
+    depends_on:
+      certs:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U threats -d threats"]
       interval: 3s
@@ -37,22 +52,33 @@ services:
       retries: 20
     restart: unless-stopped
 
-  # Generates development certificates into ./deploy/certs once.
-  # Runs as root only to hand the server key over to the non-root app user.
+  # Generates development certificates into ./deploy/certs and the db-certs
+  # volume once. Runs as root only to hand the private keys over to the
+  # non-root users of the service (65532) and of PostgreSQL (70).
   certs:
     <<: *app-image
     user: "0:0"
     command: ["devcerts", "-dir", "/certs", "-if-missing", "-owner", "65532",
-              "-hosts", "localhost,127.0.0.1,::1,threat-exchange", "-client", "demo-client"]
+              "-hosts", "localhost,127.0.0.1,::1,threat-exchange", "-client", "demo-client",
+              "-db-dir", "/db-certs", "-db-hosts", "db", "-db-owner", "70"]
+    # Keep a stale healthcheck of the image from delaying a one-off job.
+    healthcheck:
+      disable: true
     volumes:
       - ./deploy/certs:/certs
+      - db-certs:/db-certs
     restart: "no"
 
+  # Migrations run as the owner of the schema; the service does not have to.
   migrate:
     <<: *app-image
     command: ["migrate"]
+    healthcheck:
+      disable: true
     environment:
-      DB_URL: postgres://threats:${POSTGRES_PASSWORD:-threats-dev-password}@db:5432/threats?sslmode=disable
+      DB_URL: postgres://threats:${POSTGRES_PASSWORD:-threats-dev-password}@db:5432/threats?sslmode=verify-full&sslrootcert=/certs/ca.crt
+    volumes:
+      - ./deploy/certs:/certs:ro
     depends_on:
       db:
         condition: service_healthy
@@ -62,19 +88,21 @@ services:
     <<: *app-image
     command: ["serve"]
     environment:
-      DB_URL: postgres://threats:${POSTGRES_PASSWORD:-threats-dev-password}@db:5432/threats?sslmode=disable
+      DB_URL: postgres://threats_app:${APP_DB_PASSWORD:-threats-app-dev-password}@db:5432/threats?sslmode=verify-full&sslrootcert=/certs/ca.crt
       # Format: id:role:sha256(key). Plain demo keys: demo-writer-key-change-me / demo-reader-key-change-me
       AUTH_API_KEYS: >-
         demo-writer:writer:915e589fd1bb71fd397f2b3cdbfe485feac7d6c467276a6d5630ab2e16f45344,
         demo-reader:reader:704d0c11fdd1b8ce4a3b466fbc7bfd3f9f18265f20d05d2a3d0e713fa196e14f
       TLS_CERT_FILE: /certs/server.crt
       TLS_KEY_FILE: /certs/server.key
-      # Uncomment to require client certificates (mutual TLS):
+      # Uncomment to require client certificates (mutual TLS) and, on top of it,
+      # to accept an API key only with the certificate of its owner:
       # TLS_CLIENT_CA_FILE: /certs/ca.crt
+      # AUTH_BIND_CLIENT_CERT: "true"
       LOG_LEVEL: info
     ports:
-      - "8443:8443"
-      # Ops endpoints (health, metrics) are bound to localhost only.
+      - "127.0.0.1:${API_PORT:-8443}:8443"
+      # Ops endpoints (health, metrics).
       - "127.0.0.1:${OPS_PORT:-8081}:8081"
     volumes:
       - ./deploy/certs:/certs:ro
@@ -93,3 +121,4 @@ services:
 
 volumes:
   pgdata:
+  db-certs:

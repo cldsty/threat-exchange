@@ -37,6 +37,19 @@ func TestDefaults(t *testing.T) {
 	assert.Equal(t, "json", cfg.Log.Format)
 }
 
+func TestBindClientCertRequiresMutualTLS(t *testing.T) {
+	t.Parallel()
+	env := base()
+	env["AUTH_BIND_CLIENT_CERT"] = "true"
+	_, err := config.LoadFrom(env)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "TLS_CLIENT_CA_FILE")
+
+	env["TLS_CLIENT_CA_FILE"] = "/certs/ca.crt"
+	_, err = config.LoadFrom(env)
+	assert.NoError(t, err)
+}
+
 func TestOverrides(t *testing.T) {
 	t.Parallel()
 	env := base()

@@ -1,9 +1,13 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"net/netip"
@@ -209,6 +213,54 @@ func limitBody(maxBytes int64) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// jsonBody enforces what the request validator is too lenient about for routes
+// with a body: the media type (415 instead of a generic 400) and that the body
+// is exactly one JSON value. JSON decoders stop after the first value, so
+// without this check anything after it would be silently ignored.
+func jsonBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		matched := false
+		if ri := infoFrom(r.Context()); ri != nil {
+			matched = ri.route != routeUnmatched
+		}
+		if !matched || (r.Method != http.MethodPost && r.Method != http.MethodPut) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil || mediaType != "application/json" {
+			writeError(w, r, http.StatusUnsupportedMediaType, api.ErrorResponseCodeUnsupportedMediaType, msgMediaType,
+				"Send the request body as application/json", nil)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, r, http.StatusRequestEntityTooLarge, api.ErrorResponseCodePayloadTooLarge, msgTooLarge, "", nil)
+			return
+		}
+		if err != nil || !json.Valid(body) {
+			writeError(w, r, http.StatusBadRequest, api.ErrorResponseCodeValidationFailed, msgValidation, "",
+				[]api.FieldError{{Field: "body", Message: "must be a single valid JSON value"}})
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		next.ServeHTTP(w, r)
+	})
+}
+
+// headAsGet serves HEAD requests by the GET route, as RFC 9110 requires. The
+// spec describes only GET; net/http drops the body of a response to HEAD.
+func headAsGet(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ri := infoFrom(r.Context()); r.Method == http.MethodHead && ri != nil && ri.route != routeUnmatched {
+			r = r.WithContext(r.Context())
+			r.Method = http.MethodGet
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // rateLimit rejects requests that exceed the limit for the key returned by

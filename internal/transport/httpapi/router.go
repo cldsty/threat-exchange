@@ -35,7 +35,8 @@ type Config struct {
 //
 //	request ID → metrics/access log → panic recovery → security headers →
 //	per-IP rate limit → authentication → per-key rate limit →
-//	authorization → body size limit → OpenAPI validation → handlers
+//	authorization → body size limit → media type and JSON syntax →
+//	OpenAPI validation → handlers
 //
 // Panic recovery sits inside the access log so that recovered requests are
 // still counted and logged as 500. Unauthenticated and unauthorized requests
@@ -59,6 +60,7 @@ func NewHandler(c Config) (http.Handler, error) {
 	// Match routes by path only; the server URL in the spec is documentation.
 	spec.Servers = nil
 
+	mux := http.NewServeMux()
 	validator := nethttpmiddleware.OapiRequestValidatorWithOptions(spec, &nethttpmiddleware.Options{
 		Options: openapi3filter.Options{
 			// Authentication is handled by our own middleware.
@@ -66,12 +68,11 @@ func NewHandler(c Config) (http.Handler, error) {
 			MultiError:         true,
 		},
 		ErrorHandlerWithOpts: func(_ context.Context, err error, w http.ResponseWriter, r *http.Request, opts nethttpmiddleware.ErrorHandlerOpts) {
-			validationErrorHandler(c.Logger)(w, r, err, opts.StatusCode)
+			validationErrorHandler(c.Logger, mux)(w, r, err, opts.StatusCode)
 		},
 		SilenceServersWarning: true,
 	})
 
-	mux := http.NewServeMux()
 	strict := api.NewStrictHandlerWithOptions(NewHandlers(c.Service, c.Logger), nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc:  requestErrorHandler,
 		ResponseErrorHandlerFunc: responseErrorHandler(c.Logger),
@@ -83,6 +84,8 @@ func NewHandler(c Config) (http.Handler, error) {
 
 	var h http.Handler = mux
 	h = validator(h)
+	h = headAsGet(h)
+	h = jsonBody(h)
 	h = limitBody(c.MaxBodyBytes)(h)
 	h = authorize(c.Logger, c.Metrics)(h)
 	if c.KeyLimiter != nil {
