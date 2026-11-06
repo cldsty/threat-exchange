@@ -3,12 +3,8 @@ info:
   title: Information Exchange Service
   description: |
     API для обмена информацией об угрозах по MD5-хешу файла. Каждый запрос должен
-    содержать заголовок `X-API-Key`, ключу на сервере сопоставлена роль:
-
-    | Роль | Разрешено |
-    |---|---|
-    | `reader` | `GET`, `HEAD` |
-    | `writer` | `GET`, `HEAD`, `POST`, `PUT` |
+    содержать заголовок `X-API-Key`. `reader` может только читать, `writer` ещё
+    создаёт и заменяет записи.
   version: 1.2.0
 
 servers:
