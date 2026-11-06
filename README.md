@@ -44,6 +44,7 @@ API на `http://localhost:8090` (только чтение).
 | Ключ | Роль |
 |---|---|
 | `demo-writer-key-change-me` | `writer` - чтение и запись |
+| `demo-partner-key-change-me` | `writer` - второй участник обмена |
 | `demo-reader-key-change-me` | `reader` - только чтение |
 
 Остановить всё (данные БД сохранятся в volume `pgdata`):
@@ -80,8 +81,7 @@ bin/threat-exchange serve
 
 ## API
 
-Полное описание - в [`api/openapi.yaml`](api/openapi.yaml) (можно открыть в
-[Swagger Editor](https://editor.swagger.io/)).
+Полное описание - в [`api/openapi.yaml`](api/openapi.yaml)
 
 | Метод | Путь | Роль | Ответы |
 |---|---|---|---|
@@ -146,6 +146,11 @@ curl --cacert deploy/certs/ca.crt -X PUT https://localhost:8443/info/44d88612fea
   -H 'If-Match: "1"' -d '{"name":"EICAR-Test-File","zone":"red","severity":"low","revoked":true}'
 ```
 
+Все сценарии можно проверить через Postman: импортируйте
+[`postman/threat-exchange.postman_collection.json`](postman/threat-exchange.postman_collection.json),
+укажите `deploy/certs/ca.crt` в Settings → Certificates → CA Certificates и запустите
+коллекцию целиком.
+
 ### Служебные адреса
 
 `http://127.0.0.1:8081/healthz`, `/readyz` и `/metrics` доступны только с localhost.
@@ -173,9 +178,7 @@ curl --cacert deploy/certs/ca.crt -X PUT https://localhost:8443/info/44d88612fea
 
 ## Конфигурация
 
-Все настройки - переменные окружения. Секреты можно передать файлом
-(`*_FILE`), что удобно для Docker/Kubernetes secrets. Неверная конфигурация
-обнаруживается при старте, сервис сразу завершается с понятной ошибкой.
+Все настройки - переменные окружения. 
 
 | Переменная | По умолчанию | Описание |
 |---|---|---|
@@ -230,21 +233,6 @@ make lint              # golangci-lint
 make up / make down    # весь стек в Docker
 ```
 
-Без `make` (например, на Windows):
-
-```bash
-go test -race ./...
-docker compose up -d --wait db
-# PowerShell: $env:TEST_DB_URL="postgres://threats:threats-dev-password@127.0.0.1:5432/threats?sslmode=disable"
-TEST_DB_URL=postgres://threats:threats-dev-password@127.0.0.1:5432/threats?sslmode=disable \
-  go test -race -tags integration ./...
-```
-
-Если PostgreSQL запущен на другом порту (`DB_PORT`), укажите его и в `TEST_DB_URL`.
-
-Интеграционные тесты создают для каждого теста отдельную временную базу и
-удаляют её после теста, поэтому их можно запускать параллельно на общем сервере.
-
 ### Структура проекта
 
 ```
@@ -262,6 +250,7 @@ internal/server/               сборка приложения, TLS, служ�
 internal/config/               конфигурация из окружения
 internal/devcerts/             генерация dev-сертификатов (без openssl)
 deploy/postgres/               создание роли сервиса в БД для compose
+postman/                       коллекция Postman со сценариями API
 docs/                          архитектура, безопасность, принятые решения
 ```
 

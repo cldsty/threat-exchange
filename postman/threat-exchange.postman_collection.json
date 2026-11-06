@@ -1,0 +1,3188 @@
+{
+  "info": {
+    "name": "Threat Exchange",
+    "description": "Проверка всех сценариев API, которые можно вызвать запросом. Запускайте всю коллекцию целиком (Run collection): шаги идут по порядку и зависят друг от друга, а MD5 создаётся заново при каждом запуске.\n\nПеред запуском в Settings → Certificates → CA Certificates укажите `deploy/certs/ca.crt`. Если сервис работает на другом порту, измените переменную `baseUrl`.\n\nОтветы 500 и 503 здесь не проверяются: они требуют внутренней ошибки или остановки базы и покрыты автотестами.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://localhost:8443"
+    },
+    {
+      "key": "writerKey",
+      "value": "demo-writer-key-change-me"
+    },
+    {
+      "key": "partnerKey",
+      "value": "demo-partner-key-change-me"
+    },
+    {
+      "key": "readerKey",
+      "value": "demo-reader-key-change-me"
+    },
+    {
+      "key": "md5",
+      "value": ""
+    },
+    {
+      "key": "md5Second",
+      "value": ""
+    },
+    {
+      "key": "sha256",
+      "value": ""
+    },
+    {
+      "key": "sha256Second",
+      "value": ""
+    },
+    {
+      "key": "etag",
+      "value": ""
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// A short pause keeps the run below the rate limit of 20 requests per second per key.",
+          "setTimeout(() => {}, 70);"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.test('Есть X-Request-ID', () => pm.expect(pm.response.headers.get('X-Request-ID')).to.not.be.empty);"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Создание записи (POST /info)",
+      "description": "Успешное создание и значения по умолчанию.",
+      "item": [
+        {
+          "name": "201: только md5 и name, как в исходном задании",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const hex = n => Array.from({length: n}, () => Math.floor(Math.random() * 16).toString(16)).join('');",
+                  "pm.collectionVariables.set('md5', hex(32));",
+                  "pm.collectionVariables.set('md5Second', hex(32));",
+                  "pm.collectionVariables.set('sha256', hex(64));",
+                  "pm.collectionVariables.set('sha256Second', hex(64));",
+                  "pm.variables.set('md5', pm.collectionVariables.get('md5'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 201', () => pm.response.to.have.status(201));",
+                  "pm.test('ETag 1', () => pm.expect(pm.response.headers.get('ETag')).to.eql('\"1\"'));",
+                  "pm.test('Location указывает на запись', () => pm.expect(pm.response.headers.get('Location')).to.eql('/info/' + pm.collectionVariables.get('md5')));",
+                  "pm.test('Значения по умолчанию', () => {",
+                  "    const b = pm.response.json();",
+                  "    pm.expect(b.zone).to.eql('grey');",
+                  "    pm.expect(b.severity).to.eql('unknown');",
+                  "    pm.expect(b.tlp).to.eql('amber');",
+                  "    pm.expect(b.types).to.eql([]);",
+                  "    pm.expect(b.revoked).to.eql(false);",
+                  "});",
+                  "pm.test('Автор определён по ключу', () => {",
+                  "    pm.expect(pm.response.json().created_by).to.eql('demo-writer');",
+                  "    pm.expect(pm.response.json().updated_by).to.eql('demo-writer');",
+                  "});",
+                  "pm.test('Версия только в ETag', () => pm.expect(pm.response.json()).to.not.have.property('version'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{md5}}\",\"name\":\"Trojan.Win32.Generic\"}"
+            }
+          }
+        },
+        {
+          "name": "201: все поля, хеши в верхнем регистре",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 201', () => pm.response.to.have.status(201));",
+                  "pm.test('Все поля сохранены и нормализованы', () => {",
+                  "    const b = pm.response.json();",
+                  "    pm.expect(b.sha1).to.eql('da39a3ee5e6b4b0d3255bfef95601890afd80709');",
+                  "    pm.expect(b.types).to.eql(['trojan', 'downloader']);",
+                  "    pm.expect(b.first_seen_at).to.eql('2026-01-15T10:30:00Z');",
+                  "    pm.expect(b.tlp).to.eql('amber+strict');",
+                  "    pm.expect(b.confidence).to.eql(85);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\": \"{{md5Second}}\", \"sha1\": \"DA39A3EE5E6B4B0D3255BFEF95601890AFD80709\", \"sha256\": \"{{sha256}}\", \"name\": \"Trojan.Win32.Full\", \"description\": \"Загружает модули\", \"types\": [\"trojan\", \"downloader\"], \"zone\": \"red\", \"severity\": \"high\", \"file_size\": 73802, \"first_seen_at\": \"2026-01-15T13:30:00+03:00\", \"last_seen_at\": \"2026-02-01T00:00:00Z\", \"tlp\": \"amber+strict\", \"confidence\": 85, \"revoked\": false}"
+            }
+          }
+        },
+        {
+          "name": "201: MD5 приводится к нижнему регистру",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('upper', Array.from({length: 32}, () => 'ABCDEF'[Math.floor(Math.random() * 6)]).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 201', () => pm.response.to.have.status(201));",
+                  "pm.test('MD5 в нижнем регистре', () => pm.expect(pm.response.json().md5).to.match(/^[a-f]{32}$/));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{upper}}\",\"name\":\"X\"}"
+            }
+          }
+        },
+        {
+          "name": "201: charset в Content-Type допустим",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\"}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Конфликты при создании",
+      "description": "Ответы 409.",
+      "item": [
+        {
+          "name": "409: такой MD5 уже есть",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 409', () => pm.response.to.have.status(409));",
+                  "pm.test('Код ошибки conflict', () => pm.expect(pm.response.json().code).to.eql('conflict'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{partnerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{md5}}\",\"name\":\"От партнёра\"}"
+            }
+          }
+        },
+        {
+          "name": "409: такой MD5 в другом регистре",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('upper', pm.collectionVariables.get('md5').toUpperCase());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 409', () => pm.response.to.have.status(409));",
+                  "pm.test('Код ошибки conflict', () => pm.expect(pm.response.json().code).to.eql('conflict'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{upper}}\",\"name\":\"X\"}"
+            }
+          }
+        },
+        {
+          "name": "409: SHA-256 принадлежит другой записи",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 409', () => pm.response.to.have.status(409));",
+                  "pm.test('Код ошибки conflict', () => pm.expect(pm.response.json().code).to.eql('conflict'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\",\"sha256\":\"{{sha256}}\"}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Ошибки валидации при создании",
+      "description": "Ответы 400 по спецификации и бизнес-правилам.",
+      "item": [
+        {
+          "name": "400: нет md5",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле md5', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('md5'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"X\"}"
+            }
+          }
+        },
+        {
+          "name": "400: нет name",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле name', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('name'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\"}"
+            }
+          }
+        },
+        {
+          "name": "400: md5 короткий",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле md5', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('md5'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"abc\",\"name\":\"X\"}"
+            }
+          }
+        },
+        {
+          "name": "400: md5 не hex",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле md5', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('md5'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\",\"name\":\"X\"}"
+            }
+          }
+        },
+        {
+          "name": "400: неверный sha1",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле sha1', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('sha1'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\",\"sha1\":\"abc\"}"
+            }
+          }
+        },
+        {
+          "name": "400: неверный sha256",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле sha256', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('sha256'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\",\"sha256\":\"abc\"}"
+            }
+          }
+        },
+        {
+          "name": "400: лишнее поле",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле body', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('body'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\",\"colour\":\"red\"}"
+            }
+          }
+        },
+        {
+          "name": "400: пробелы по краям имени",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле name', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('name'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\" X \"}"
+            }
+          }
+        },
+        {
+          "name": "400: имя длиннее 255 символов",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле name', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('name'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"
+            }
+          }
+        },
+        {
+          "name": "400: невидимый символ в имени",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле name', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('name'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"a\\u200bb\"}"
+            }
+          }
+        },
+        {
+          "name": "400: смена направления текста в имени",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле name', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('name'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"a\\u202eb\"}"
+            }
+          }
+        },
+        {
+          "name": "400: описание из пробелов",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле description', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('description'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\",\"description\":\"   \"}"
+            }
+          }
+        },
+        {
+          "name": "400: смена направления текста в описании",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле description', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('description'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\",\"description\":\"a\\u202eb\"}"
+            }
+          }
+        },
+        {
+          "name": "400: неизвестный тип",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле types.0', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('types.0'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\",\"types\":[\"Trojan\"]}"
+            }
+          }
+        },
+        {
+          "name": "400: повтор типа",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле types', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('types'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\",\"types\":[\"worm\",\"worm\"]}"
+            }
+          }
+        },
+        {
+          "name": "400: неизвестная зона",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле zone', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('zone'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\",\"zone\":\"blue\"}"
+            }
+          }
+        },
+        {
+          "name": "400: неизвестный severity",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле severity', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('severity'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\",\"severity\":\"extreme\"}"
+            }
+          }
+        },
+        {
+          "name": "400: severity для зоны grey",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле severity', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('severity'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\",\"severity\":\"high\"}"
+            }
+          }
+        },
+        {
+          "name": "400: severity для зоны green",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле severity', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('severity'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\",\"zone\":\"green\",\"severity\":\"high\"}"
+            }
+          }
+        },
+        {
+          "name": "400: неизвестный tlp",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле tlp', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('tlp'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\",\"tlp\":\"white\"}"
+            }
+          }
+        },
+        {
+          "name": "400: confidence больше 100",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле confidence', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('confidence'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\",\"confidence\":101}"
+            }
+          }
+        },
+        {
+          "name": "400: отрицательный confidence",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле confidence', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('confidence'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\",\"confidence\":-1}"
+            }
+          }
+        },
+        {
+          "name": "400: отрицательный размер файла",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле file_size', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('file_size'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\",\"file_size\":-1}"
+            }
+          }
+        },
+        {
+          "name": "400: дата без часового пояса",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле first_seen_at', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('first_seen_at'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\",\"first_seen_at\":\"2026-01-01T00:00:00\"}"
+            }
+          }
+        },
+        {
+          "name": "400: дата раньше 1970 года",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле first_seen_at', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('first_seen_at'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\",\"first_seen_at\":\"1969-12-31T23:59:59Z\"}"
+            }
+          }
+        },
+        {
+          "name": "400: год меньше нуля после перевода в UTC",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле first_seen_at', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('first_seen_at'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\",\"first_seen_at\":\"0000-01-01T00:00:00+14:00\"}"
+            }
+          }
+        },
+        {
+          "name": "400: дата в будущем",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле last_seen_at', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('last_seen_at'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\",\"last_seen_at\":\"2099-01-01T00:00:00Z\"}"
+            }
+          }
+        },
+        {
+          "name": "400: last_seen_at раньше first_seen_at",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле last_seen_at', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('last_seen_at'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\",\"first_seen_at\":\"2026-02-01T00:00:00Z\",\"last_seen_at\":\"2026-01-01T00:00:00Z\"}"
+            }
+          }
+        },
+        {
+          "name": "400: неверный тип значения",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле revoked', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('revoked'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\",\"revoked\":\"yes\"}"
+            }
+          }
+        },
+        {
+          "name": "400: битый JSON",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле body', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('body'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":"
+            }
+          }
+        },
+        {
+          "name": "400: данные после JSON",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле body', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('body'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\"}{\"junk\":1}"
+            }
+          }
+        },
+        {
+          "name": "400: пустое тело",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле body', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('body'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Чтение (GET и HEAD /info/{md5})",
+      "description": "",
+      "item": [
+        {
+          "name": "200: чтение ключом reader",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 200', () => pm.response.to.have.status(200));",
+                  "pm.test('ETag 1', () => pm.expect(pm.response.headers.get('ETag')).to.eql('\"1\"'));pm.collectionVariables.set('etag', pm.response.headers.get('ETag'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{readerKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}"
+          }
+        },
+        {
+          "name": "200: чтение ключом writer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}"
+          }
+        },
+        {
+          "name": "200: MD5 в верхнем регистре",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('upper', pm.collectionVariables.get('md5').toUpperCase());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{readerKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{upper}}"
+          }
+        },
+        {
+          "name": "200: HEAD без тела ответа",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 200', () => pm.response.to.have.status(200));",
+                  "pm.test('ETag 1', () => pm.expect(pm.response.headers.get('ETag')).to.eql('\"1\"'));",
+                  "pm.test('Тела нет', () => pm.expect(pm.response.text()).to.eql(''));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "HEAD",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{readerKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}"
+          }
+        },
+        {
+          "name": "400: неверный MD5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле md5', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('md5'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{readerKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/info/not-an-md5"
+          }
+        },
+        {
+          "name": "404: записи нет",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 404', () => pm.response.to.have.status(404));",
+                  "pm.test('Код ошибки not_found', () => pm.expect(pm.response.json().code).to.eql('not_found'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{readerKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/info/ffffffffffffffffffffffffffffffff"
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Замена (PUT /info/{md5})",
+      "description": "Запрос заменяет запись полностью. Шаги идут по порядку и зависят от версии записи.",
+      "item": [
+        {
+          "name": "200: своя запись без If-Match, поля сбрасываются",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 200', () => pm.response.to.have.status(200));",
+                  "pm.test('ETag 2', () => pm.expect(pm.response.headers.get('ETag')).to.eql('\"2\"'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"V2\",\"zone\":\"red\",\"severity\":\"high\",\"tlp\":\"red\",\"confidence\":50,\"types\":[\"worm\"]}"
+            }
+          }
+        },
+        {
+          "name": "200: полная замена сбрасывает поля",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 200', () => pm.response.to.have.status(200));",
+                  "pm.test('ETag 3', () => pm.expect(pm.response.headers.get('ETag')).to.eql('\"3\"'));",
+                  "pm.test('Необязательные поля сброшены', () => {",
+                  "    const b = pm.response.json();",
+                  "    pm.expect(b.zone).to.eql('grey');",
+                  "    pm.expect(b.tlp).to.eql('amber');",
+                  "    pm.expect(b.types).to.eql([]);",
+                  "    pm.expect(b).to.not.have.property('confidence');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "If-Match",
+                "value": "\"2\""
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"V3\"}"
+            }
+          }
+        },
+        {
+          "name": "200: список версий в If-Match",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 200', () => pm.response.to.have.status(200));",
+                  "pm.test('ETag 4', () => pm.expect(pm.response.headers.get('ETag')).to.eql('\"4\"'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "If-Match",
+                "value": "\"1\", \"3\""
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"V4\"}"
+            }
+          }
+        },
+        {
+          "name": "200: If-Match * для своей записи",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 200', () => pm.response.to.have.status(200));",
+                  "pm.test('ETag 5', () => pm.expect(pm.response.headers.get('ETag')).to.eql('\"5\"'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "If-Match",
+                "value": "*"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"V5\"}"
+            }
+          }
+        },
+        {
+          "name": "412: устаревшая версия",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 412', () => pm.response.to.have.status(412));",
+                  "pm.test('Код ошибки precondition_failed', () => pm.expect(pm.response.json().code).to.eql('precondition_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "If-Match",
+                "value": "\"1\""
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"Устарело\"}"
+            }
+          }
+        },
+        {
+          "name": "400: If-Match без кавычек",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле If-Match', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('If-Match'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "If-Match",
+                "value": "1"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"X\"}"
+            }
+          }
+        },
+        {
+          "name": "400: слабый ETag",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле If-Match', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('If-Match'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "If-Match",
+                "value": "W/\"1\""
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"X\"}"
+            }
+          }
+        },
+        {
+          "name": "400: md5 в теле запрещён",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле body', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('body'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{md5}}\",\"name\":\"X\"}"
+            }
+          }
+        },
+        {
+          "name": "400: нет name",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле name', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('name'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        },
+        {
+          "name": "400: неверный MD5 в адресе",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле md5', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('md5'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info/xyz",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"X\"}"
+            }
+          }
+        },
+        {
+          "name": "400: битый JSON",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Код ошибки validation_failed', () => pm.expect(pm.response.json().code).to.eql('validation_failed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Ошибка в поле body', () => pm.expect(pm.response.json().fields.map(f => f.field)).to.include('body'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":"
+            }
+          }
+        },
+        {
+          "name": "404: записи нет",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 404', () => pm.response.to.have.status(404));",
+                  "pm.test('Код ошибки not_found', () => pm.expect(pm.response.json().code).to.eql('not_found'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info/ffffffffffffffffffffffffffffffff",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"X\"}"
+            }
+          }
+        },
+        {
+          "name": "409: SHA-256 другой записи",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 409', () => pm.response.to.have.status(409));",
+                  "pm.test('Код ошибки conflict', () => pm.expect(pm.response.json().code).to.eql('conflict'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"X\",\"sha256\":\"{{sha256}}\"}"
+            }
+          }
+        },
+        {
+          "name": "200: запись сохраняет свой SHA-256",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5Second}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"X\",\"sha256\":\"{{sha256}}\"}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Совместная работа двух организаций",
+      "description": "Запись общая: чужую можно заменить только с конкретной версией.",
+      "item": [
+        {
+          "name": "428: чужая запись без If-Match",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 428', () => pm.response.to.have.status(428));",
+                  "pm.test('Код ошибки precondition_required', () => pm.expect(pm.response.json().code).to.eql('precondition_required'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{partnerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"От партнёра\"}"
+            }
+          }
+        },
+        {
+          "name": "428: чужая запись с If-Match *",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 428', () => pm.response.to.have.status(428));",
+                  "pm.test('Код ошибки precondition_required', () => pm.expect(pm.response.json().code).to.eql('precondition_required'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{partnerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "If-Match",
+                "value": "*"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"От партнёра\"}"
+            }
+          }
+        },
+        {
+          "name": "200: партнёр читает запись",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('etag', pm.response.headers.get('ETag'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{partnerKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}"
+          }
+        },
+        {
+          "name": "200: партнёр заменяет с версией",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Авторы записаны верно', () => {",
+                  "    pm.expect(pm.response.json().created_by).to.eql('demo-writer');",
+                  "    pm.expect(pm.response.json().updated_by).to.eql('demo-partner');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{partnerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "If-Match",
+                "value": "{{etag}}"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"Объединено\"}"
+            }
+          }
+        },
+        {
+          "name": "428: теперь первая организация должна прочитать запись",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 428', () => pm.response.to.have.status(428));",
+                  "pm.test('Код ошибки precondition_required', () => pm.expect(pm.response.json().code).to.eql('precondition_required'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"Вслепую\"}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Авторизация и права",
+      "description": "",
+      "item": [
+        {
+          "name": "401: нет ключа",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 401', () => pm.response.to.have.status(401));",
+                  "pm.test('Код ошибки unauthorized', () => pm.expect(pm.response.json().code).to.eql('unauthorized'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Есть WWW-Authenticate', () => pm.expect(pm.response.headers.get('WWW-Authenticate')).to.include('X-API-Key'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/info/{{md5}}"
+          }
+        },
+        {
+          "name": "401: неверный ключ",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 401', () => pm.response.to.have.status(401));",
+                  "pm.test('Код ошибки unauthorized', () => pm.expect(pm.response.json().code).to.eql('unauthorized'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "wrong-key"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}"
+          }
+        },
+        {
+          "name": "401: HEAD без ключа",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "HEAD",
+            "header": [],
+            "url": "{{baseUrl}}/info/{{md5}}"
+          }
+        },
+        {
+          "name": "401: неизвестный адрес без ключа не раскрывается",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 401', () => pm.response.to.have.status(401));",
+                  "pm.test('Код ошибки unauthorized', () => pm.expect(pm.response.json().code).to.eql('unauthorized'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/unknown"
+          }
+        },
+        {
+          "name": "403: reader создаёт запись",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 403', () => pm.response.to.have.status(403));",
+                  "pm.test('Код ошибки forbidden', () => pm.expect(pm.response.json().code).to.eql('forbidden'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{readerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\"}"
+            }
+          }
+        },
+        {
+          "name": "403: reader заменяет запись",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 403', () => pm.response.to.have.status(403));",
+                  "pm.test('Код ошибки forbidden', () => pm.expect(pm.response.json().code).to.eql('forbidden'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{readerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"X\"}"
+            }
+          }
+        },
+        {
+          "name": "403: проверка прав идёт раньше проверки тела",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 403', () => pm.response.to.have.status(403));",
+                  "pm.test('Код ошибки forbidden', () => pm.expect(pm.response.json().code).to.eql('forbidden'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{readerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"bad\":true}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "8. Протокол HTTP",
+      "description": "",
+      "item": [
+        {
+          "name": "404: неизвестный адрес",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 404', () => pm.response.to.have.status(404));",
+                  "pm.test('Код ошибки not_found', () => pm.expect(pm.response.json().code).to.eql('not_found'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{readerKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/unknown"
+          }
+        },
+        {
+          "name": "405: DELETE записи, заголовок Allow",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 405', () => pm.response.to.have.status(405));",
+                  "pm.test('Код ошибки method_not_allowed', () => pm.expect(pm.response.json().code).to.eql('method_not_allowed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Allow', () => pm.expect(pm.response.headers.get('Allow')).to.eql('GET, HEAD, PUT'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}"
+          }
+        },
+        {
+          "name": "405: GET /info, заголовок Allow",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 405', () => pm.response.to.have.status(405));",
+                  "pm.test('Код ошибки method_not_allowed', () => pm.expect(pm.response.json().code).to.eql('method_not_allowed'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Allow', () => pm.expect(pm.response.headers.get('Allow')).to.eql('POST'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/info"
+          }
+        },
+        {
+          "name": "413: слишком большое тело",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('bigBody', JSON.stringify({md5: pm.collectionVariables.get('md5'), name: 'X', description: 'a'.repeat(70000)}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 413', () => pm.response.to.have.status(413));",
+                  "pm.test('Код ошибки payload_too_large', () => pm.expect(pm.response.json().code).to.eql('payload_too_large'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{{bigBody}}"
+            }
+          }
+        },
+        {
+          "name": "413: большое тело в PUT",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('bigBody', JSON.stringify({name: 'X', description: 'a'.repeat(70000)}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 413', () => pm.response.to.have.status(413));",
+                  "pm.test('Код ошибки payload_too_large', () => pm.expect(pm.response.json().code).to.eql('payload_too_large'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{{bigBody}}"
+            }
+          }
+        },
+        {
+          "name": "415: POST с text/plain",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('newMd5', Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join(''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 415', () => pm.response.to.have.status(415));",
+                  "pm.test('Код ошибки unsupported_media_type', () => pm.expect(pm.response.json().code).to.eql('unsupported_media_type'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "text/plain"
+              }
+            ],
+            "url": "{{baseUrl}}/info",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"md5\":\"{{newMd5}}\",\"name\":\"X\"}"
+            }
+          }
+        },
+        {
+          "name": "415: PUT с application/xml",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 415', () => pm.response.to.have.status(415));",
+                  "pm.test('Код ошибки unsupported_media_type', () => pm.expect(pm.response.json().code).to.eql('unsupported_media_type'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{writerKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/xml"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"X\"}"
+            }
+          }
+        },
+        {
+          "name": "Заголовки защиты и request_id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Заголовки защиты', () => {",
+                  "    pm.expect(pm.response.headers.get('X-Content-Type-Options')).to.eql('nosniff');",
+                  "    pm.expect(pm.response.headers.get('Cache-Control')).to.eql('no-store');",
+                  "    pm.expect(pm.response.headers.get('Strict-Transport-Security')).to.include('max-age=');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{readerKey}}"
+              },
+              {
+                "key": "X-Request-ID",
+                "value": "postman-check-1"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "9. Ограничение частоты запросов",
+      "description": "Выполняется последним: израсходует лимит ключа reader примерно на 2 секунды.",
+      "item": [
+        {
+          "name": "429: превышен лимит на ключ",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const url = pm.variables.get('baseUrl') + '/info/' + pm.collectionVariables.get('md5');",
+                  "const key = pm.collectionVariables.get('readerKey');",
+                  "for (let i = 0; i < 80; i++) {",
+                  "    pm.sendRequest({url: url, method: 'GET', header: {'X-API-Key': key}}, () => {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Статус 429', () => pm.response.to.have.status(429));",
+                  "pm.test('Код ошибки rate_limited', () => pm.expect(pm.response.json().code).to.eql('rate_limited'));",
+                  "pm.test('Ошибка содержит request_id', () => pm.expect(pm.response.json().request_id).to.eql(pm.response.headers.get('X-Request-ID')));",
+                  "pm.test('Есть Retry-After', () => pm.expect(Number(pm.response.headers.get('Retry-After'))).to.be.above(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{readerKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/info/{{md5}}"
+          }
+        }
+      ]
+    }
+  ]
+}
