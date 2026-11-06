@@ -61,6 +61,32 @@ func (s Severity) Valid() bool {
 	return false
 }
 
+// TLP is a Traffic Light Protocol 2.0 label: how far the information may be
+// shared. The service stores the label but does not enforce it on reads.
+type TLP string
+
+// TLP values.
+const (
+	TLPClear       TLP = "clear"
+	TLPGreen       TLP = "green"
+	TLPAmber       TLP = "amber"
+	TLPAmberStrict TLP = "amber+strict"
+	TLPRed         TLP = "red"
+)
+
+// DefaultTLP is assigned when the client does not provide a label. It errs on
+// the side of restricting distribution.
+const DefaultTLP = TLPAmber
+
+// Valid reports whether t is one of the known labels.
+func (t TLP) Valid() bool {
+	switch t {
+	case TLPClear, TLPGreen, TLPAmber, TLPAmberStrict, TLPRed:
+		return true
+	}
+	return false
+}
+
 // Type is a behaviour category of a threat, based on the Behaviour part of
 // Kaspersky detection names.
 type Type string
@@ -113,7 +139,10 @@ type Attributes struct {
 	FileSize    *int64
 	FirstSeenAt *time.Time
 	LastSeenAt  *time.Time
-	Revoked     bool
+	TLP         TLP
+	// Confidence is the author's confidence in the assessment, from 0 to 100.
+	Confidence *int32
+	Revoked    bool
 }
 
 // Meta is server-managed bookkeeping data of a stored threat.

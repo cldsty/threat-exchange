@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,6 +39,8 @@ func TestCreateNormalizesAndApplyDefaults(t *testing.T) {
 	assert.Equal(t, md5Lower, got.MD5, "MD5 is stored in lower case")
 	assert.Equal(t, threat.ZoneGrey, got.Zone)
 	assert.Equal(t, threat.SeverityUnknown, got.Severity)
+	assert.Equal(t, threat.TLPAmber, got.TLP)
+	assert.Nil(t, got.Confidence)
 	assert.Equal(t, []threat.Type{}, got.Types)
 	assert.Equal(t, "partner-a", got.CreatedBy)
 	assert.Equal(t, "partner-a", got.UpdatedBy)
@@ -105,7 +108,7 @@ func TestReplace(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("full replacement resets omitted fields", func(t *testing.T) {
-		got, err := svc.Replace(ctx, "editor", md5Upper, threat.Attributes{Name: "New"}, nil)
+		got, err := svc.Replace(ctx, "editor", md5Upper, threat.Attributes{Name: "New"}, []int64{1})
 		require.NoError(t, err)
 		assert.Equal(t, "New", got.Name)
 		assert.Nil(t, got.Description)
@@ -118,16 +121,28 @@ func TestReplace(t *testing.T) {
 	})
 
 	t.Run("matching version", func(t *testing.T) {
-		v := int64(2)
-		got, err := svc.Replace(ctx, "editor", md5Lower, threat.Attributes{Name: "Newer"}, &v)
+		got, err := svc.Replace(ctx, "editor", md5Lower, threat.Attributes{Name: "Newer"}, []int64{2})
 		require.NoError(t, err)
 		assert.EqualValues(t, 3, got.Version)
 	})
 
 	t.Run("stale version", func(t *testing.T) {
-		v := int64(1)
-		_, err := svc.Replace(ctx, "editor", md5Lower, threat.Attributes{Name: "Lost update"}, &v)
+		_, err := svc.Replace(ctx, "editor", md5Lower, threat.Attributes{Name: "Lost update"}, []int64{1})
 		assert.ErrorIs(t, err, threat.ErrVersionMismatch)
+	})
+
+	t.Run("own record does not need a version", func(t *testing.T) {
+		got, err := svc.Replace(ctx, "editor", md5Lower, threat.Attributes{Name: "Own"}, nil)
+		require.NoError(t, err)
+		assert.EqualValues(t, 4, got.Version)
+	})
+
+	t.Run("record of another actor needs a version", func(t *testing.T) {
+		_, err := svc.Replace(ctx, "partner", md5Lower, threat.Attributes{Name: "Blind"}, nil)
+		assert.ErrorIs(t, err, threat.ErrPreconditionRequired)
+		got, err := svc.Replace(ctx, "partner", md5Lower, threat.Attributes{Name: "Merged"}, []int64{3, 4})
+		require.NoError(t, err)
+		assert.Equal(t, "partner", got.UpdatedBy)
 	})
 
 	t.Run("not found", func(t *testing.T) {
@@ -140,6 +155,28 @@ func TestReplace(t *testing.T) {
 		var ve *threat.ValidationError
 		assert.True(t, errors.As(err, &ve))
 	})
+}
+
+func TestSHA256BelongsToOneRecord(t *testing.T) {
+	t.Parallel()
+	svc := newService(t)
+	ctx := context.Background()
+	sha := strings.Repeat("a", 64)
+	other := strings.Repeat("b", 32)
+	_, err := svc.Create(ctx, "a", md5Lower, threat.Attributes{Name: "X", SHA256: &sha})
+	require.NoError(t, err)
+
+	upper := strings.ToUpper(sha)
+	_, err = svc.Create(ctx, "a", other, threat.Attributes{Name: "Y", SHA256: &upper})
+	assert.ErrorIs(t, err, threat.ErrHashConflict, "comparison is case-insensitive")
+
+	_, err = svc.Create(ctx, "a", other, threat.Attributes{Name: "Y"})
+	require.NoError(t, err)
+	_, err = svc.Replace(ctx, "a", other, threat.Attributes{Name: "Y", SHA256: &sha}, nil)
+	assert.ErrorIs(t, err, threat.ErrHashConflict)
+
+	_, err = svc.Replace(ctx, "a", md5Lower, threat.Attributes{Name: "X2", SHA256: &sha}, nil)
+	assert.NoError(t, err, "a record keeps its own SHA-256")
 }
 
 type failingRepo struct{ service.Repository }

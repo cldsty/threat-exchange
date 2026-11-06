@@ -22,7 +22,7 @@ import (
 type ThreatService interface {
 	Get(ctx context.Context, md5 string) (threat.Threat, error)
 	Create(ctx context.Context, actor, md5 string, attrs threat.Attributes) (threat.Threat, error)
-	Replace(ctx context.Context, actor, md5 string, attrs threat.Attributes, expectedVersion *int64) (threat.Threat, error)
+	Replace(ctx context.Context, actor, md5 string, attrs threat.Attributes, expectedVersions []int64) (threat.Threat, error)
 }
 
 // Handlers implements api.StrictServerInterface.
@@ -82,6 +82,8 @@ func (h *Handlers) CreateThreat(ctx context.Context, req api.CreateThreatRequest
 	case errors.Is(err, threat.ErrAlreadyExists):
 		return api.CreateThreat409JSONResponse(errorBody(ctx, api.ErrorResponseCodeConflict, msgConflict,
 			fmt.Sprintf("Threat with MD5 %s already exists", strings.ToLower(req.Body.Md5)), nil)), nil
+	case errors.Is(err, threat.ErrHashConflict):
+		return api.CreateThreat409JSONResponse(errorBody(ctx, api.ErrorResponseCodeConflict, msgHashConflict, hashConflictDetails, nil)), nil
 	default:
 		return nil, err
 	}
@@ -120,6 +122,12 @@ func (h *Handlers) UpdateThreat(ctx context.Context, req api.UpdateThreatRequest
 		return api.UpdateThreat412JSONResponse{PreconditionFailedJSONResponse: api.PreconditionFailedJSONResponse(
 			errorBody(ctx, api.ErrorResponseCodePreconditionFailed, msgPrecond,
 				"The record version does not match If-Match; fetch the record and retry", nil))}, nil
+	case errors.Is(err, threat.ErrPreconditionRequired):
+		return api.UpdateThreat428JSONResponse{PreconditionRequiredJSONResponse: api.PreconditionRequiredJSONResponse(
+			errorBody(ctx, api.ErrorResponseCodePreconditionRequired, msgPrecondRequired,
+				"The record was last modified by another client; fetch it, merge the data and send If-Match with its ETag", nil))}, nil
+	case errors.Is(err, threat.ErrHashConflict):
+		return api.UpdateThreat409JSONResponse(errorBody(ctx, api.ErrorResponseCodeConflict, msgHashConflict, hashConflictDetails, nil)), nil
 	default:
 		return nil, err
 	}
@@ -144,9 +152,10 @@ func etag(version int64) *string {
 	return &s
 }
 
-// parseIfMatch parses the If-Match header. A missing header or "*" means
-// "any version" (nil). Only a single strong entity tag is supported.
-func parseIfMatch(h *string) (*int64, error) {
+// parseIfMatch parses the If-Match header into the accepted versions. A missing
+// header or "*" means that no specific version is requested (nil). Weak entity
+// tags are rejected: If-Match requires strong comparison.
+func parseIfMatch(h *string) ([]int64, error) {
 	if h == nil {
 		return nil, nil
 	}
@@ -154,15 +163,28 @@ func parseIfMatch(h *string) (*int64, error) {
 	if v == "" || v == "*" {
 		return nil, nil
 	}
+	tags := strings.Split(v, ",")
+	versions := make([]int64, 0, len(tags))
+	for _, tag := range tags {
+		n, err := parseEntityTag(strings.TrimSpace(tag))
+		if err != nil {
+			return nil, err
+		}
+		versions = append(versions, n)
+	}
+	return versions, nil
+}
+
+func parseEntityTag(v string) (int64, error) {
 	if strings.HasPrefix(v, "W/") {
-		return nil, errors.New("weak entity tags are not supported")
+		return 0, errors.New("weak entity tags are not supported")
 	}
 	if len(v) < 3 || v[0] != '"' || v[len(v)-1] != '"' {
-		return nil, errors.New(`must be a quoted version, e.g. "3"`)
+		return 0, errors.New(`must be a quoted version, e.g. "3"`)
 	}
 	n, err := strconv.ParseInt(v[1:len(v)-1], 10, 64)
 	if err != nil || n < 1 {
-		return nil, errors.New(`must be a quoted positive version, e.g. "3"`)
+		return 0, errors.New(`must be a quoted positive version, e.g. "3"`)
 	}
-	return &n, nil
+	return n, nil
 }

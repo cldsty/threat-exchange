@@ -19,9 +19,13 @@ func TestParseIfMatch(t *testing.T) {
 
 	got, err := parseIfMatch(s(`"42"`))
 	require.NoError(t, err)
-	assert.EqualValues(t, 42, *got)
+	assert.Equal(t, []int64{42}, got)
 
-	for _, bad := range []string{`42`, `""`, `"abc"`, `"0"`, `"-1"`, `W/"1"`, `"1`, `"1", "2"`} {
+	got, err = parseIfMatch(s(`"1", "2" ,"3"`))
+	require.NoError(t, err)
+	assert.Equal(t, []int64{1, 2, 3}, got, "RFC 9110 allows a list of entity tags")
+
+	for _, bad := range []string{`42`, `""`, `"abc"`, `"0"`, `"-1"`, `W/"1"`, `"1`, `"1", "2`, `"1", *`, `"1",`} {
 		_, err := parseIfMatch(s(bad))
 		assert.Error(t, err, bad)
 	}

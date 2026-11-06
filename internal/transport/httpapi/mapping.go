@@ -11,16 +11,17 @@ import (
 
 func fromCreateRequest(r api.ThreatCreateRequest) threat.Attributes {
 	return attributes(r.Sha1, r.Sha256, r.Name, r.Description, r.Types, r.Zone, r.Severity,
-		r.FileSize, r.FirstSeenAt, r.LastSeenAt, r.Revoked)
+		r.FileSize, r.FirstSeenAt, r.LastSeenAt, r.Tlp, r.Confidence, r.Revoked)
 }
 
 func fromUpdateRequest(r api.ThreatUpdateRequest) threat.Attributes {
 	return attributes(r.Sha1, r.Sha256, r.Name, r.Description, r.Types, r.Zone, r.Severity,
-		r.FileSize, r.FirstSeenAt, r.LastSeenAt, r.Revoked)
+		r.FileSize, r.FirstSeenAt, r.LastSeenAt, r.Tlp, r.Confidence, r.Revoked)
 }
 
 func attributes(sha1, sha256 *string, name string, description *string, types *api.ThreatTypes,
-	zone *api.Zone, severity *api.Severity, fileSize *int64, firstSeen, lastSeen *api.SeenAt, revoked *bool,
+	zone *api.Zone, severity *api.Severity, fileSize *int64, firstSeen, lastSeen *api.SeenAt,
+	tlp *api.Tlp, confidence *int32, revoked *bool,
 ) threat.Attributes {
 	a := threat.Attributes{
 		SHA1:        sha1,
@@ -30,6 +31,10 @@ func attributes(sha1, sha256 *string, name string, description *string, types *a
 		FileSize:    fileSize,
 		FirstSeenAt: firstSeen,
 		LastSeenAt:  lastSeen,
+		Confidence:  confidence,
+	}
+	if tlp != nil {
+		a.TLP = threat.TLP(*tlp)
 	}
 	if types != nil {
 		a.Types = make([]threat.Type, len(*types))
@@ -66,6 +71,8 @@ func toResponse(t threat.Threat) api.ThreatResponse {
 		FileSize:    t.FileSize,
 		FirstSeenAt: t.FirstSeenAt,
 		LastSeenAt:  t.LastSeenAt,
+		Tlp:         api.Tlp(t.TLP),
+		Confidence:  t.Confidence,
 		Revoked:     t.Revoked,
 		CreatedAt:   t.CreatedAt,
 		UpdatedAt:   t.UpdatedAt,

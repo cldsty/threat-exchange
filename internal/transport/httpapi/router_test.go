@@ -29,9 +29,10 @@ import (
 )
 
 const (
-	readerKey = "tx_reader_key"
-	writerKey = "tx_writer_key"
-	md5       = "d41d8cd98f00b204e9800998ecf8427e"
+	readerKey  = "tx_reader_key"
+	writerKey  = "tx_writer_key"
+	partnerKey = "tx_partner_key"
+	md5        = "d41d8cd98f00b204e9800998ecf8427e"
 )
 
 var fixedNow = time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
@@ -47,7 +48,8 @@ type option func(*httpapi.Config)
 
 func newEnv(t *testing.T, opts ...option) *env {
 	t.Helper()
-	keys, err := auth.ParseKeyStore("reader:reader:" + auth.HashKey(readerKey) + ",writer:writer:" + auth.HashKey(writerKey))
+	keys, err := auth.ParseKeyStore("reader:reader:" + auth.HashKey(readerKey) +
+		",writer:writer:" + auth.HashKey(writerKey) + ",partner:writer:" + auth.HashKey(partnerKey))
 	require.NoError(t, err)
 	clock := func() time.Time { return fixedNow }
 	logs := &bytes.Buffer{}
@@ -151,7 +153,8 @@ func TestCreateAndGet(t *testing.T) {
 	assert.Equal(t, md5, got.Md5, "MD5 normalized to lower case")
 	assert.Equal(t, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", *got.Sha256)
 	assert.Equal(t, api.ThreatTypes{"trojan", "downloader"}, got.Types)
-	assert.Equal(t, api.Red, got.Zone)
+	assert.Equal(t, api.ZoneRed, got.Zone)
+	assert.Equal(t, api.TlpAmber, got.Tlp, "default label")
 	assert.Equal(t, api.High, got.Severity)
 	assert.Equal(t, time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC), *got.FirstSeenAt, "stored in UTC")
 	assert.Equal(t, "writer", got.CreatedBy)
@@ -169,7 +172,7 @@ func TestCreateWithOriginalContractOnly(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
 	got := e.create(`{"md5":"` + md5 + `","name":"Trojan.Win32.Generic"}`).threat(t)
-	assert.Equal(t, api.Grey, got.Zone)
+	assert.Equal(t, api.ZoneGrey, got.Zone)
 	assert.Equal(t, api.Unknown, got.Severity)
 	assert.False(t, got.Revoked)
 	assert.Equal(t, api.ThreatTypes{}, got.Types)
@@ -213,6 +216,14 @@ func TestCreateValidation(t *testing.T) {
 		{"severity for grey zone", `{"md5":"` + md5 + `","name":"X","severity":"high"}`, []string{"severity"}},
 		{"last before first", `{"md5":"` + md5 + `","name":"X","first_seen_at":"2026-02-01T00:00:00Z","last_seen_at":"2026-01-01T00:00:00Z"}`, []string{"last_seen_at"}},
 		{"future date", `{"md5":"` + md5 + `","name":"X","last_seen_at":"2027-01-01T00:00:00Z"}`, []string{"last_seen_at"}},
+		{"date before the minimum", `{"md5":"` + md5 + `","name":"X","first_seen_at":"1969-12-31T23:59:59Z"}`, []string{"first_seen_at"}},
+		{"year below zero after UTC conversion", `{"md5":"` + md5 + `","name":"X","first_seen_at":"0000-01-01T00:00:00+14:00"}`, []string{"first_seen_at"}},
+		{"zero-width name", `{"md5":"` + md5 + `","name":"\u200b"}`, []string{"name"}},
+		{"bidi override in name", `{"md5":"` + md5 + `","name":"Trojan\u202eexe.txt"}`, []string{"name"}},
+		{"bidi override in description", `{"md5":"` + md5 + `","name":"X","description":"a\u202eb"}`, []string{"description"}},
+		{"unknown tlp", `{"md5":"` + md5 + `","name":"X","tlp":"white"}`, []string{"tlp"}},
+		{"confidence above range", `{"md5":"` + md5 + `","name":"X","confidence":101}`, []string{"confidence"}},
+		{"negative confidence", `{"md5":"` + md5 + `","name":"X","confidence":-1}`, []string{"confidence"}},
 		{"several problems", `{"md5":"x","name":" X","zone":"blue"}`, []string{"md5", "name", "zone"}},
 	}
 	for _, tt := range tests {
@@ -279,10 +290,59 @@ func TestReplace(t *testing.T) {
 	got := r.threat(t)
 	assert.Equal(t, "New", got.Name)
 	assert.True(t, got.Revoked)
-	assert.Equal(t, api.Grey, got.Zone, "PUT is a full replacement")
+	assert.Equal(t, api.ZoneGrey, got.Zone, "PUT is a full replacement")
 	assert.Equal(t, api.Unknown, got.Severity)
 	assert.Empty(t, got.Types)
 	assert.Nil(t, got.Description)
+}
+
+func TestSharedRecordBetweenOrganizations(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	created := e.create(`{"md5":"` + md5 + `","name":"From A","zone":"red","severity":"high","tlp":"green","confidence":90}`)
+	got := created.threat(t)
+	assert.Equal(t, api.TlpGreen, got.Tlp)
+	assert.EqualValues(t, 90, *got.Confidence)
+
+	// Organization B cannot create a second record...
+	r := e.do(http.MethodPost, "/info", partnerKey, `{"md5":"`+md5+`","name":"From B"}`)
+	assert.Equal(t, http.StatusConflict, r.StatusCode)
+
+	// ...and cannot overwrite the data of A without having read it.
+	for _, headers := range [][]string{nil, {"If-Match", "*"}} {
+		r = e.do(http.MethodPut, "/info/"+md5, partnerKey, `{"name":"From B"}`, headers...)
+		require.Equal(t, http.StatusPreconditionRequired, r.StatusCode, string(r.body))
+		assert.Equal(t, api.ErrorResponseCodePreconditionRequired, r.errorBody(t).Code)
+	}
+
+	// It reads the record, merges the data and replaces it with the version.
+	read := e.do(http.MethodGet, "/info/"+md5, partnerKey, "")
+	r = e.do(http.MethodPut, "/info/"+md5, partnerKey, `{"name":"Merged","zone":"red","severity":"high"}`,
+		"If-Match", read.Header.Get("ETag"))
+	require.Equal(t, http.StatusOK, r.StatusCode, string(r.body))
+	got = r.threat(t)
+	assert.Equal(t, "writer", got.CreatedBy)
+	assert.Equal(t, "partner", got.UpdatedBy)
+
+	// Now A is the one who has to read the record first.
+	r = e.do(http.MethodPut, "/info/"+md5, writerKey, `{"name":"From A again"}`)
+	assert.Equal(t, http.StatusPreconditionRequired, r.StatusCode)
+}
+
+func TestSHA256Conflict(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	sha := strings.Repeat("a", 64)
+	other := strings.Repeat("b", 32)
+	e.create(`{"md5":"` + md5 + `","name":"X","sha256":"` + sha + `"}`)
+
+	r := e.do(http.MethodPost, "/info", writerKey, `{"md5":"`+other+`","name":"Y","sha256":"`+sha+`"}`)
+	assert.Equal(t, http.StatusConflict, r.StatusCode, string(r.body))
+	assert.Equal(t, "SHA-256 belongs to another threat", r.errorBody(t).Message)
+
+	e.create(`{"md5":"` + other + `","name":"Y"}`)
+	r = e.do(http.MethodPut, "/info/"+other, writerKey, `{"name":"Y","sha256":"`+sha+`"}`)
+	assert.Equal(t, http.StatusConflict, r.StatusCode, string(r.body))
 }
 
 func TestReplaceErrors(t *testing.T) {
@@ -320,6 +380,9 @@ func TestReplaceErrors(t *testing.T) {
 		r = e.do(http.MethodPut, "/info/"+md5, writerKey, `{"name":"V3"}`, "If-Match", "*")
 		require.Equal(t, http.StatusOK, r.StatusCode, string(r.body))
 		assert.Equal(t, `"3"`, r.Header.Get("ETag"))
+		r = e.do(http.MethodPut, "/info/"+md5, writerKey, `{"name":"V4"}`, "If-Match", `"2", "3"`)
+		require.Equal(t, http.StatusOK, r.StatusCode, "a list of entity tags is accepted: %s", r.body)
+		assert.Equal(t, `"4"`, r.Header.Get("ETag"))
 	})
 }
 

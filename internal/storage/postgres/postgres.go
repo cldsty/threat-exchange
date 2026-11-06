@@ -102,6 +102,25 @@ func migrate(ctx context.Context, db *sql.DB, logger *slog.Logger) error {
 	return nil
 }
 
+// MigrateDown rolls back the latest migration. It is used to verify that
+// migrations are reversible.
+func MigrateDown(ctx context.Context, pool *pgxpool.Pool) error {
+	db := stdlib.OpenDBFromPool(pool)
+	defer func() { _ = db.Close() }()
+	fsys, err := subFS()
+	if err != nil {
+		return err
+	}
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, fsys)
+	if err != nil {
+		return fmt.Errorf("create migration provider: %w", err)
+	}
+	if _, err := provider.Down(ctx); err != nil {
+		return fmt.Errorf("roll back migration: %w", err)
+	}
+	return nil
+}
+
 func subFS() (fs.FS, error) {
 	fsys, err := fs.Sub(migrationsFS, "migrations")
 	if err != nil {

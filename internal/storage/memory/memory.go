@@ -5,6 +5,7 @@ package memory
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"time"
 
@@ -47,6 +48,9 @@ func (r *Repository) Create(_ context.Context, md5 string, a threat.Attributes, 
 	if _, ok := r.items[md5]; ok {
 		return threat.Threat{}, threat.ErrAlreadyExists
 	}
+	if r.sha256TakenLocked(md5, a.SHA256) {
+		return threat.Threat{}, threat.ErrHashConflict
+	}
 	now := r.now().UTC()
 	t := threat.Threat{
 		MD5:        md5,
@@ -58,15 +62,21 @@ func (r *Repository) Create(_ context.Context, md5 string, a threat.Attributes, 
 }
 
 // Replace implements service.Repository.
-func (r *Repository) Replace(_ context.Context, md5 string, a threat.Attributes, actor string, expectedVersion *int64) (threat.Threat, error) {
+func (r *Repository) Replace(_ context.Context, md5 string, a threat.Attributes, actor string, expectedVersions []int64) (threat.Threat, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	t, ok := r.items[md5]
 	if !ok {
 		return threat.Threat{}, threat.ErrNotFound
 	}
-	if expectedVersion != nil && *expectedVersion != t.Version {
+	if len(expectedVersions) == 0 && t.UpdatedBy != actor {
+		return threat.Threat{}, threat.ErrPreconditionRequired
+	}
+	if len(expectedVersions) > 0 && !slices.Contains(expectedVersions, t.Version) {
 		return threat.Threat{}, threat.ErrVersionMismatch
+	}
+	if r.sha256TakenLocked(md5, a.SHA256) {
+		return threat.Threat{}, threat.ErrHashConflict
 	}
 	t.Attributes = a
 	t.UpdatedAt = r.now().UTC()
@@ -74,6 +84,18 @@ func (r *Repository) Replace(_ context.Context, md5 string, a threat.Attributes,
 	t.Version++
 	r.items[md5] = clone(t)
 	return t, nil
+}
+
+func (r *Repository) sha256TakenLocked(md5 string, sha256 *string) bool {
+	if sha256 == nil {
+		return false
+	}
+	for k, t := range r.items {
+		if k != md5 && t.SHA256 != nil && *t.SHA256 == *sha256 {
+			return true
+		}
+	}
+	return false
 }
 
 func clone(t threat.Threat) threat.Threat {

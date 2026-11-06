@@ -6,8 +6,10 @@ info:
 
     Модель угрозы расширена по сравнению с исходной спецификацией и частично
     ориентирована на Kaspersky Threat Intelligence Portal (цветовые зоны,
-    first/last seen, размер файла). Исходный контракт сохранён: клиент,
-    передающий только `md5` и `name`, продолжает работать.
+    first/last seen, размер файла). Поля исходного контракта не изменились:
+    для создания и замены записи по-прежнему достаточно `md5` и `name`.
+    Добавлены требования защиты: TLS, заголовок `X-API-Key` и запрет лишних
+    полей в теле запроса.
 
     ## Аутентификация и роли
     Каждый запрос должен содержать заголовок `X-API-Key`. Ключу на сервере
@@ -23,8 +25,17 @@ info:
 
     ## Оптимистичная блокировка
     Ответы содержат заголовок `ETag` с версией записи. `PUT` принимает
-    необязательный `If-Match`: если запись успела измениться, возвращается `412`.
-  version: 1.1.0
+    `If-Match`: если запись успела измениться, возвращается `412`.
+
+    ## Совместная работа над записью
+    На один MD5 приходится одна общая запись, менять её может любой `writer`.
+    Чтобы чужие данные нельзя было затереть вслепую, замена записи, которую
+    последним менял другой ключ, требует `If-Match` с конкретной версией,
+    иначе возвращается `428`. Все версии сохраняются в истории на сервере.
+
+    Организация, у которой есть данные об уже известном MD5, получает `409`
+    на `POST`, читает запись, объединяет данные и отправляет `PUT` с `If-Match`.
+  version: 1.2.0
   license:
     name: Proprietary
 
@@ -105,10 +116,18 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: Указанный SHA-256 уже принадлежит записи с другим MD5
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '412':
           $ref: '#/components/responses/PreconditionFailed'
         '413':
           $ref: '#/components/responses/PayloadTooLarge'
+        '428':
+          $ref: '#/components/responses/PreconditionRequired'
         '429':
           $ref: '#/components/responses/TooManyRequests'
         '500':
@@ -148,7 +167,7 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '409':
-          description: Угроза с таким MD5 уже существует
+          description: Угроза с таким MD5 уже существует, либо указанный SHA-256 принадлежит другой записи
           content:
             application/json:
               schema:
@@ -181,11 +200,12 @@ components:
       in: header
       required: false
       description: |
-        Версия записи из заголовка `ETag`, например `"3"`. Значение `*`
-        означает «любая существующая версия».
+        Версия записи из заголовка `ETag`, например `"3"`, или список версий
+        через запятую. Значение `*` означает «любая существующая версия» и не
+        считается проверкой при замене чужой записи: для неё нужна конкретная версия.
       schema:
         type: string
-        maxLength: 32
+        maxLength: 128
         example: '"3"'
 
   headers:
@@ -222,6 +242,14 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
     PreconditionFailed:
       description: Версия в `If-Match` не совпадает с текущей версией записи
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PreconditionRequired:
+      description: |
+        Запись последним менял другой ключ, поэтому нужен `If-Match` с версией,
+        полученной при чтении записи
       content:
         application/json:
           schema:
@@ -279,7 +307,8 @@ components:
         Название угрозы (детект), например в формате Kaspersky
         `[Prefix:]Behaviour.Platform.Name[.Variant]`. Жёсткая проверка формата
         не выполняется, так как в обмене встречаются имена других вендоров.
-        Пробелы по краям и управляющие символы запрещены.
+        Запрещены пробелы по краям, управляющие и невидимые символы (нулевой
+        ширины, изменяющие направление текста), разделители строк и абзацев.
       example: "Trojan.Win32.Generic"
 
     Description:
@@ -288,7 +317,9 @@ components:
       maxLength: 2000
       # Хотя бы один непробельный символ; из управляющих разрешены только \t, \n, \r.
       pattern: '^[^\x00-\x08\x0B\x0C\x0E-\x1F\x7F]*[^\s\x00-\x1F\x7F][^\x00-\x08\x0B\x0C\x0E-\x1F\x7F]*$'
-      description: Описание угрозы в свободной форме. Строка из одних пробелов недопустима.
+      description: |
+        Описание угрозы в свободной форме. Строка из одних пробелов недопустима,
+        как и символы, изменяющие направление текста.
       example: "Троянская программа, загружающая дополнительные модули."
 
     ThreatType:
@@ -342,6 +373,24 @@ components:
       default: unknown
       example: high
 
+    Tlp:
+      type: string
+      description: |
+        Метка допустимого распространения по Traffic Light Protocol 2.0.
+        Сервер хранит и передаёт метку, но не ограничивает по ней чтение: её
+        соблюдение остаётся обязанностью получателя.
+      enum: [clear, green, amber, amber+strict, red]
+      default: amber
+      example: amber
+
+    Confidence:
+      type: integer
+      format: int32
+      minimum: 0
+      maximum: 100
+      description: Уверенность автора в оценке, от 0 до 100 (как в STIX 2.1).
+      example: 85
+
     FileSize:
       type: integer
       format: int64
@@ -352,7 +401,7 @@ components:
     SeenAt:
       type: string
       format: date-time
-      description: Дата и время в формате RFC 3339 с часовым поясом. Не может быть в будущем.
+      description: Дата и время в формате RFC 3339 с часовым поясом. Не раньше 1970 года и не в будущем.
       example: "2026-01-15T10:30:00Z"
 
     ThreatCreateRequest:
@@ -384,6 +433,10 @@ components:
           $ref: '#/components/schemas/SeenAt'
         last_seen_at:
           $ref: '#/components/schemas/SeenAt'
+        tlp:
+          $ref: '#/components/schemas/Tlp'
+        confidence:
+          $ref: '#/components/schemas/Confidence'
         revoked:
           type: boolean
           default: false
@@ -416,6 +469,10 @@ components:
           $ref: '#/components/schemas/SeenAt'
         last_seen_at:
           $ref: '#/components/schemas/SeenAt'
+        tlp:
+          $ref: '#/components/schemas/Tlp'
+        confidence:
+          $ref: '#/components/schemas/Confidence'
         revoked:
           type: boolean
           default: false
@@ -429,6 +486,7 @@ components:
         - types
         - zone
         - severity
+        - tlp
         - revoked
         - created_at
         - updated_at
@@ -458,6 +516,10 @@ components:
           $ref: '#/components/schemas/SeenAt'
         last_seen_at:
           $ref: '#/components/schemas/SeenAt'
+        tlp:
+          $ref: '#/components/schemas/Tlp'
+        confidence:
+          $ref: '#/components/schemas/Confidence'
         revoked:
           type: boolean
           description: Признак отзыва информации.
@@ -496,6 +558,7 @@ components:
             - method_not_allowed
             - conflict
             - precondition_failed
+            - precondition_required
             - payload_too_large
             - rate_limited
             - internal

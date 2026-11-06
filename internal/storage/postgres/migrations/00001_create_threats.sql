@@ -1,6 +1,7 @@
 -- +goose Up
--- Threat records. Constraints duplicate the API and domain rules on purpose
--- (defence in depth): the database never accepts data the service would reject.
+-- Threat records. Constraints duplicate the main API and domain rules on purpose
+-- (defence in depth). They cover formats, enumerations and rules between fields;
+-- rules that depend on the current time or on Unicode classes stay in the domain.
 CREATE TABLE threats (
     md5           text        PRIMARY KEY
                               CONSTRAINT threats_md5_format CHECK (md5 ~ '^[0-9a-f]{32}$'),

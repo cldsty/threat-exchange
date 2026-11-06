@@ -14,10 +14,15 @@ const (
 	MaxNameLength        = 255
 	MaxDescriptionLength = 2000
 	MaxTypes             = 12
+	MaxConfidence        = 100
 	// MaxClockSkew is how far into the future a *_seen_at timestamp may be
 	// to tolerate clock differences between exchange participants.
 	MaxClockSkew = 5 * time.Minute
 )
+
+// MinSeenAt is the earliest accepted *_seen_at timestamp. Older values are
+// certainly mistakes, and years around zero cannot be represented in JSON.
+var MinSeenAt = time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)
 
 const (
 	md5HexLen    = 32
@@ -47,6 +52,9 @@ func (a Attributes) Normalize() Attributes {
 	}
 	if a.Severity == "" {
 		a.Severity = DefaultSeverity
+	}
+	if a.TLP == "" {
+		a.TLP = DefaultTLP
 	}
 	if a.Types == nil {
 		a.Types = []Type{}
@@ -102,13 +110,14 @@ func (a Attributes) Validate(now time.Time) error {
 	if a.FileSize != nil && *a.FileSize < 0 {
 		v.Add("file_size", "must be non-negative")
 	}
-	limit := now.Add(MaxClockSkew)
-	if a.FirstSeenAt != nil && a.FirstSeenAt.After(limit) {
-		v.Add("first_seen_at", "must not be in the future")
+	if !a.TLP.Valid() {
+		v.Add("tlp", fmt.Sprintf("unknown label %q", a.TLP))
 	}
-	if a.LastSeenAt != nil && a.LastSeenAt.After(limit) {
-		v.Add("last_seen_at", "must not be in the future")
+	if a.Confidence != nil && (*a.Confidence < 0 || *a.Confidence > MaxConfidence) {
+		v.Add("confidence", fmt.Sprintf("must be between 0 and %d", MaxConfidence))
 	}
+	checkSeenAt("first_seen_at", a.FirstSeenAt, now, &v)
+	checkSeenAt("last_seen_at", a.LastSeenAt, now, &v)
 	if a.FirstSeenAt != nil && a.LastSeenAt != nil && a.LastSeenAt.Before(*a.FirstSeenAt) {
 		v.Add("last_seen_at", "must not be earlier than first_seen_at")
 	}
@@ -117,6 +126,27 @@ func (a Attributes) Validate(now time.Time) error {
 		return &v
 	}
 	return nil
+}
+
+func checkSeenAt(field string, t *time.Time, now time.Time, v *ValidationError) {
+	switch {
+	case t == nil:
+	case t.Before(MinSeenAt):
+		v.Add(field, "must not be earlier than "+MinSeenAt.Format(time.DateOnly))
+	case t.After(now.Add(MaxClockSkew)):
+		v.Add(field, "must not be in the future")
+	}
+}
+
+// isBidiControl reports characters that change the display order of text and
+// can make a name look like something else (e.g. "exe.txt" vs "txt.exe").
+func isBidiControl(r rune) bool {
+	return r >= '\u202A' && r <= '\u202E' || r >= '\u2066' && r <= '\u2069' || r == '\u200E' || r == '\u200F'
+}
+
+// isForbiddenInName reports characters that are invisible or break the line.
+func isForbiddenInName(r rune) bool {
+	return unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)
 }
 
 func normalizeHex(s string, n int) (string, error) {
@@ -142,8 +172,8 @@ func checkName(s string) string {
 		return fmt.Sprintf("must be at most %d characters", MaxNameLength)
 	case strings.TrimSpace(s) != s:
 		return "must not have leading or trailing whitespace"
-	case strings.IndexFunc(s, unicode.IsControl) >= 0:
-		return "must not contain control characters"
+	case strings.IndexFunc(s, isForbiddenInName) >= 0:
+		return "must not contain control or invisible characters"
 	}
 	return ""
 }
@@ -160,6 +190,8 @@ func checkDescription(s string) string {
 		return unicode.IsControl(r) && r != '\t' && r != '\n' && r != '\r'
 	}) >= 0:
 		return "must not contain control characters other than tab and newline"
+	case strings.IndexFunc(s, isBidiControl) >= 0:
+		return "must not contain characters that change the text direction"
 	}
 	return ""
 }

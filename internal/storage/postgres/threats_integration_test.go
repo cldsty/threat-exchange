@@ -39,6 +39,8 @@ func fullAttrs() threat.Attributes {
 		FileSize:    ptr[int64](73802),
 		FirstSeenAt: &first,
 		LastSeenAt:  &last,
+		TLP:         threat.TLPAmberStrict,
+		Confidence:  ptr[int32](85),
 		Revoked:     false,
 	}
 }
@@ -82,6 +84,8 @@ func TestRepositoryOptionalFieldsAreNull(t *testing.T) {
 	assert.Nil(t, got.Description)
 	assert.Nil(t, got.FileSize)
 	assert.Nil(t, got.FirstSeenAt)
+	assert.Nil(t, got.Confidence)
+	assert.Equal(t, threat.TLPAmber, got.TLP)
 	assert.Equal(t, []threat.Type{}, got.Types)
 }
 
@@ -94,7 +98,7 @@ func TestRepositoryReplace(t *testing.T) {
 	require.NoError(t, err)
 
 	time.Sleep(10 * time.Millisecond)
-	replaced, err := repo.Replace(ctx, md5, threat.Attributes{Name: "New", Revoked: true}.Normalize(), "editor", ptr[int64](1))
+	replaced, err := repo.Replace(ctx, md5, threat.Attributes{Name: "New", Revoked: true}.Normalize(), "editor", []int64{1})
 	require.NoError(t, err)
 	assert.Equal(t, "New", replaced.Name)
 	assert.True(t, replaced.Revoked)
@@ -105,11 +109,99 @@ func TestRepositoryReplace(t *testing.T) {
 	assert.Equal(t, created.CreatedAt, replaced.CreatedAt, "created_at never changes")
 	assert.True(t, replaced.UpdatedAt.After(created.UpdatedAt))
 
-	_, err = repo.Replace(ctx, md5, threat.Attributes{Name: "Stale"}.Normalize(), "editor", ptr[int64](1))
+	_, err = repo.Replace(ctx, md5, threat.Attributes{Name: "Stale"}.Normalize(), "editor", []int64{1})
 	assert.ErrorIs(t, err, threat.ErrVersionMismatch)
 
 	_, err = repo.Replace(ctx, "ffffffffffffffffffffffffffffffff", threat.Attributes{Name: "X"}.Normalize(), "editor", nil)
 	assert.ErrorIs(t, err, threat.ErrNotFound)
+
+	got, err := repo.Replace(ctx, md5, threat.Attributes{Name: "List"}.Normalize(), "editor", []int64{1, 2})
+	require.NoError(t, err, "any version of the list matches")
+	assert.EqualValues(t, 3, got.Version)
+}
+
+func TestRepositoryBlindReplaceOfForeignRecord(t *testing.T) {
+	t.Parallel()
+	pool, _ := pgtest.NewDB(t)
+	repo := postgres.NewThreatRepository(pool)
+	ctx := context.Background()
+	_, err := repo.Create(ctx, md5, threat.Attributes{Name: "A"}.Normalize(), "partner-a")
+	require.NoError(t, err)
+
+	_, err = repo.Replace(ctx, md5, threat.Attributes{Name: "B"}.Normalize(), "partner-b", nil)
+	assert.ErrorIs(t, err, threat.ErrPreconditionRequired)
+
+	got, err := repo.Replace(ctx, md5, threat.Attributes{Name: "A2"}.Normalize(), "partner-a", nil)
+	require.NoError(t, err, "the last author may replace their own data")
+	assert.EqualValues(t, 2, got.Version)
+}
+
+func TestHistoryKeepsEveryVersion(t *testing.T) {
+	t.Parallel()
+	pool, _ := pgtest.NewDB(t)
+	repo := postgres.NewThreatRepository(pool)
+	ctx := context.Background()
+	_, err := repo.Create(ctx, md5, threat.Attributes{Name: "From A", Zone: threat.ZoneRed, Severity: threat.SeverityHigh}.Normalize(), "partner-a")
+	require.NoError(t, err)
+	_, err = repo.Replace(ctx, md5, threat.Attributes{Name: "From B", Zone: threat.ZoneGreen}.Normalize(), "partner-b", []int64{1})
+	require.NoError(t, err)
+
+	rows, err := pool.Query(ctx, `SELECT version, changed_by, snapshot->>'name', snapshot->>'zone'
+		FROM threat_history WHERE md5 = $1 ORDER BY version`, md5)
+	require.NoError(t, err)
+	type entry struct {
+		Version        int64
+		By, Name, Zone string
+	}
+	var got []entry
+	for rows.Next() {
+		var e entry
+		require.NoError(t, rows.Scan(&e.Version, &e.By, &e.Name, &e.Zone))
+		got = append(got, e)
+	}
+	require.NoError(t, rows.Err())
+	assert.Equal(t, []entry{
+		{1, "partner-a", "From A", "red"},
+		{2, "partner-b", "From B", "green"},
+	}, got, "the data of partner A survives the replacement")
+
+	_, err = repo.Replace(ctx, md5, threat.Attributes{Name: "Stale"}.Normalize(), "partner-c", []int64{1})
+	require.ErrorIs(t, err, threat.ErrVersionMismatch)
+	var count int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM threat_history`).Scan(&count))
+	assert.Equal(t, 2, count, "failed attempts leave no history")
+}
+
+func TestSHA256BelongsToOneRecord(t *testing.T) {
+	t.Parallel()
+	pool, _ := pgtest.NewDB(t)
+	repo := postgres.NewThreatRepository(pool)
+	ctx := context.Background()
+	sha, sha1 := ptr(strings.Repeat("a", 64)), ptr(strings.Repeat("c", 40))
+	other := strings.Repeat("b", 32)
+	_, err := repo.Create(ctx, md5, threat.Attributes{Name: "X", SHA256: sha, SHA1: sha1}.Normalize(), "a")
+	require.NoError(t, err)
+
+	_, err = repo.Create(ctx, other, threat.Attributes{Name: "Y", SHA256: sha}.Normalize(), "a")
+	assert.ErrorIs(t, err, threat.ErrHashConflict)
+
+	_, err = repo.Create(ctx, other, threat.Attributes{Name: "Y", SHA1: sha1}.Normalize(), "a")
+	require.NoError(t, err, "SHA-1 collisions exist, so equal SHA-1 is allowed")
+
+	_, err = repo.Replace(ctx, other, threat.Attributes{Name: "Y", SHA256: sha}.Normalize(), "a", nil)
+	assert.ErrorIs(t, err, threat.ErrHashConflict)
+}
+
+func TestHistoryAndMigrationsSurviveRollback(t *testing.T) {
+	t.Parallel()
+	pool, _ := pgtest.NewDB(t)
+	ctx := context.Background()
+	require.NoError(t, postgres.MigrateDown(ctx, pool), "the latest migration can be rolled back")
+	var exists bool
+	require.NoError(t, pool.QueryRow(ctx, `SELECT to_regclass('threat_history') IS NOT NULL`).Scan(&exists))
+	assert.False(t, exists)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	require.NoError(t, postgres.Migrate(ctx, pool, logger), "and applied again")
 }
 
 // TestRepositoryConcurrentReplace verifies optimistic locking under a real
@@ -132,7 +224,7 @@ func TestRepositoryConcurrentReplace(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := repo.Replace(ctx, md5, threat.Attributes{Name: "v2"}.Normalize(), "w", ptr[int64](1))
+			_, err := repo.Replace(ctx, md5, threat.Attributes{Name: "v2"}.Normalize(), "w", []int64{1})
 			mu.Lock()
 			defer mu.Unlock()
 			switch {
@@ -172,6 +264,9 @@ func TestDatabaseConstraints(t *testing.T) {
 		"seen order":       {`INSERT INTO threats (md5, name, first_seen_at, last_seen_at, created_by, updated_by) VALUES ($1, 'X', now(), now() - interval '1 day', 'a', 'a')`, []any{md5}},
 		"negative size":    {`INSERT INTO threats (md5, name, file_size, created_by, updated_by) VALUES ($1, 'X', -1, 'a', 'a')`, []any{md5}},
 		"bad sha256":       {`INSERT INTO threats (md5, name, sha256, created_by, updated_by) VALUES ($1, 'X', 'abc', 'a', 'a')`, []any{md5}},
+		"unknown tlp":      {`INSERT INTO threats (md5, name, tlp, created_by, updated_by) VALUES ($1, 'X', 'white', 'a', 'a')`, []any{md5}},
+		"confidence range": {`INSERT INTO threats (md5, name, confidence, created_by, updated_by) VALUES ($1, 'X', 101, 'a', 'a')`, []any{md5}},
+		"ancient date":     {`INSERT INTO threats (md5, name, first_seen_at, created_by, updated_by) VALUES ($1, 'X', '0001-01-01', 'a', 'a')`, []any{md5}},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {

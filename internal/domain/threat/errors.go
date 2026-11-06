@@ -15,6 +15,12 @@ var (
 	// ErrVersionMismatch means the expected version (If-Match) does not match
 	// the stored version, i.e. somebody else modified the record.
 	ErrVersionMismatch = errors.New("threat version mismatch")
+	// ErrPreconditionRequired means the record was last modified by another
+	// actor, so replacing it requires a specific expected version.
+	ErrPreconditionRequired = errors.New("threat version is required to replace a record of another actor")
+	// ErrHashConflict means the SHA-256 belongs to a threat with another MD5.
+	// One file cannot have two MD5 digests, so one of the records is wrong.
+	ErrHashConflict = errors.New("sha256 belongs to another threat")
 )
 
 // FieldError describes a validation problem of a single field.

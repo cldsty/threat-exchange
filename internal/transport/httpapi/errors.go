@@ -16,19 +16,23 @@ import (
 	"threat-exchange/internal/domain/threat"
 )
 
+const hashConflictDetails = "One file cannot have two MD5 digests: check the hashes of this record and of the existing one"
+
 // Messages are stable and never include internal details (SQL errors, stack
 // traces); those go only to the server log, correlated by request_id.
 const (
-	msgValidation  = "Request validation failed"
-	msgBadRequest  = "Bad request"
-	msgNotFound    = "Threat not found"
-	msgConflict    = "Threat already exists"
-	msgPrecond     = "Threat was modified concurrently"
-	msgInternal    = "Internal server error"
-	msgUnauth      = "Authentication required"
-	msgForbidden   = "Insufficient permissions"
-	msgRateLimited = "Too many requests"
-	msgTooLarge    = "Request body too large"
+	msgValidation      = "Request validation failed"
+	msgBadRequest      = "Bad request"
+	msgNotFound        = "Threat not found"
+	msgConflict        = "Threat already exists"
+	msgPrecond         = "Threat was modified concurrently"
+	msgPrecondRequired = "If-Match is required to replace this threat"
+	msgHashConflict    = "SHA-256 belongs to another threat"
+	msgInternal        = "Internal server error"
+	msgUnauth          = "Authentication required"
+	msgForbidden       = "Insufficient permissions"
+	msgRateLimited     = "Too many requests"
+	msgTooLarge        = "Request body too large"
 )
 
 func errorBody(ctx context.Context, code api.ErrorResponseCode, message, details string, fields []api.FieldError) api.ErrorResponse {
