@@ -97,6 +97,7 @@ func (h *Handlers) UpdateThreat(ctx context.Context, req api.UpdateThreatRequest
 	}
 	expected, err := parseIfMatch(req.Params.IfMatch)
 	if err != nil {
+		//nolint:nilerr // the error becomes a declared 400 response
 		return api.UpdateThreat400JSONResponse{BadRequestJSONResponse: api.BadRequestJSONResponse(
 			errorBody(ctx, api.ErrorResponseCodeValidationFailed, msgValidation, "",
 				[]api.FieldError{{Field: "If-Match", Message: err.Error()}}))}, nil

@@ -31,6 +31,21 @@ func TestParseIfMatch(t *testing.T) {
 	}
 }
 
+func FuzzParseIfMatch(f *testing.F) {
+	for _, seed := range []string{"", "*", `"1"`, `"1", "2"`, `W/"1"`, `"`, `""`, `"9223372036854775808"`, `,`, "\x00"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, header string) {
+		versions, err := parseIfMatch(&header)
+		if err != nil {
+			assert.Nil(t, versions)
+		}
+		for _, v := range versions {
+			assert.Positive(t, v, "only versions that can exist are accepted")
+		}
+	})
+}
+
 func TestETag(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, `"7"`, *etag(7))

@@ -1,6 +1,6 @@
 module threat-exchange/tools
 
-go 1.27.0
+go 1.27.3
 
 tool github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen
 

@@ -12,9 +12,13 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/getkin/kin-openapi/openapi3filter"
+	"github.com/getkin/kin-openapi/routers"
+	"github.com/getkin/kin-openapi/routers/gorillamux"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -109,7 +113,66 @@ func (e *env) do(method, path, key, body string, headers ...string) response {
 	res := rec.Result()
 	b, err := io.ReadAll(res.Body)
 	require.NoError(e.t, err)
+	checkContract(e.t, method, path, res, b)
 	return response{Response: res, body: b}
+}
+
+var contractRouter = sync.OnceValues(func() (routers.Router, error) {
+	spec, err := api.GetSwagger()
+	if err != nil {
+		return nil, err
+	}
+	spec.Servers = nil
+	return gorillamux.NewRouter(spec)
+})
+
+// checkContract fails the test when a response of a route described in the spec
+// does not match it: an undeclared status code, a wrong schema, etc. Every
+// request made through env.do is checked, so the spec cannot drift from the code.
+func checkContract(t *testing.T, method, path string, res *http.Response, body []byte) {
+	t.Helper()
+	router, err := contractRouter()
+	require.NoError(t, err)
+	if method == http.MethodHead {
+		return // the spec describes GET; a response to HEAD has no body to check
+	}
+	req := httptest.NewRequest(method, path, nil)
+	route, params, err := router.FindRoute(req)
+	if err != nil {
+		return // unknown routes and methods are not part of the contract
+	}
+	err = openapi3filter.ValidateResponse(context.Background(), &openapi3filter.ResponseValidationInput{
+		RequestValidationInput: &openapi3filter.RequestValidationInput{
+			Request: req, PathParams: params, Route: route,
+			Options: &openapi3filter.Options{AuthenticationFunc: openapi3filter.NoopAuthenticationFunc},
+		},
+		Status:  res.StatusCode,
+		Header:  res.Header,
+		Body:    io.NopCloser(bytes.NewReader(body)),
+		Options: &openapi3filter.Options{IncludeResponseStatus: true},
+	})
+	assert.NoError(t, err, "%s %s: response %d does not match the spec: %s", method, path, res.StatusCode, body)
+}
+
+func TestSpecAndDomainEnumerationsMatch(t *testing.T) {
+	t.Parallel()
+	spec, err := api.GetSwagger()
+	require.NoError(t, err)
+	enums := map[string]func(string) bool{
+		"Zone":       func(v string) bool { return threat.Zone(v).Valid() },
+		"Severity":   func(v string) bool { return threat.Severity(v).Valid() },
+		"ThreatType": func(v string) bool { return threat.Type(v).Valid() },
+		"Tlp":        func(v string) bool { return threat.TLP(v).Valid() },
+	}
+	for name, valid := range enums {
+		values := spec.Components.Schemas[name].Value.Enum
+		require.NotEmpty(t, values, name)
+		for _, v := range values {
+			s, ok := v.(string)
+			require.True(t, ok)
+			assert.True(t, valid(s), "%s value %q is not known to the domain", name, s)
+		}
+	}
 }
 
 func (e *env) create(body string) response {
@@ -620,6 +683,28 @@ func TestNewHandlerRequiresDependencies(t *testing.T) {
 	t.Parallel()
 	_, err := httpapi.NewHandler(httpapi.Config{})
 	assert.Error(t, err)
+}
+
+func FuzzClientIP(f *testing.F) {
+	for _, seed := range [][2]string{
+		{"203.0.113.7:5000", ""}, {"10.0.0.5:443", "198.51.100.1, 10.1.1.1"}, {"[::1]:1", "::1"},
+		{"garbage", "not-an-ip"}, {"10.0.0.5:443", ",,,"}, {"[fe80::1%eth0]:1", "fe80::1%eth0"},
+	} {
+		f.Add(seed[0], seed[1])
+	}
+	trusted := netip.MustParsePrefix("10.0.0.0/8")
+	c := httpapi.NewClientIP([]netip.Prefix{trusted})
+	f.Fuzz(func(t *testing.T, remote, xff string) {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = remote
+		direct := c.Resolve(r)
+		r.Header.Set("X-Forwarded-For", xff)
+		peer, err := netip.ParseAddrPort(remote)
+		if err != nil || !trusted.Contains(peer.Addr().Unmap()) {
+			assert.Equal(t, direct, c.Resolve(r), "an untrusted peer cannot spoof its address")
+		}
+		_ = c.LimitKey(r) // must not panic on any input
+	})
 }
 
 func TestClientIPLimitKey(t *testing.T) {

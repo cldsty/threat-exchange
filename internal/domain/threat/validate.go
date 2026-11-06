@@ -154,12 +154,15 @@ func normalizeHex(s string, n int) (string, error) {
 		return "", fmt.Errorf("must be exactly %d hexadecimal characters", n)
 	}
 	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F') {
+		if !isHex(s[i]) {
 			return "", fmt.Errorf("must be exactly %d hexadecimal characters", n)
 		}
 	}
 	return strings.ToLower(s), nil
+}
+
+func isHex(c byte) bool {
+	return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
 }
 
 func checkName(s string) string {

@@ -5,6 +5,7 @@ GO            ?= go
 BINARY        := bin/threat-exchange
 VERSION       ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 GOLANGCI_LINT ?= golangci-lint
+FUZZTIME      ?= 30s
 TEST_DB_URL   ?= postgres://threats:threats-dev-password@127.0.0.1:5432/threats?sslmode=disable
 
 .DEFAULT_GOAL := help
@@ -49,12 +50,18 @@ cover: ## Integration test coverage report (coverage.html)
 	$(GO) tool cover -func=coverage.nogen.out | tail -1
 	$(GO) tool cover -html=coverage.nogen.out -o coverage.html
 
+.PHONY: fuzz
+fuzz: ## Fuzz the parsers of untrusted input (FUZZTIME=30s per target)
+	$(GO) test -run=NONE -fuzz=FuzzParseIfMatch -fuzztime=$(FUZZTIME) ./internal/transport/httpapi
+	$(GO) test -run=NONE -fuzz=FuzzClientIP -fuzztime=$(FUZZTIME) ./internal/transport/httpapi
+	$(GO) test -run=NONE -fuzz=FuzzNameAndDescription -fuzztime=$(FUZZTIME) ./internal/domain/threat
+
 .PHONY: build
 build: ## Build the binary into bin/
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags="-s -w -X main.version=$(VERSION)" -o $(BINARY) ./cmd/threat-exchange
 
 .PHONY: db-up
-db-up: ## Start only PostgreSQL (for integration tests)
+db-up: ## Start only PostgreSQL and generate its certificates (for integration tests)
 	docker compose up -d --wait db
 
 .PHONY: up

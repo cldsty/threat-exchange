@@ -211,11 +211,12 @@ func cmdHealthcheck() error {
 	defer cancel()
 	// Liveness, not readiness: restarting the service would not fix a database
 	// outage, and restarting every replica at once would only make it worse.
+	//nolint:gosec // the address comes from the service's own configuration
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+net.JoinHostPort(host, port)+"/healthz", nil)
 	if err != nil {
 		return err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // same as above
 	if err != nil {
 		return err
 	}

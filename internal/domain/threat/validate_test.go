@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -165,4 +167,23 @@ func TestEnums(t *testing.T) {
 	assert.False(t, threat.Severity("").Valid())
 	assert.True(t, threat.TypeHacktool.Valid())
 	assert.False(t, threat.Type("").Valid())
+}
+
+func FuzzNameAndDescription(f *testing.F) {
+	for _, seed := range []string{"Trojan.Win32.Generic", "", " x", "x ", "a\x00b", "\u200b", "a\u202eb", "\xff", "Вирус", "a\nb"} {
+		f.Add(seed)
+	}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	f.Fuzz(func(t *testing.T, s string) {
+		a := threat.Attributes{Name: s}.Normalize()
+		if a.Validate(now) == nil {
+			assert.True(t, utf8.ValidString(s))
+			assert.Equal(t, strings.TrimSpace(s), s)
+			assert.NotEmpty(t, s)
+			for _, r := range s {
+				assert.False(t, unicode.IsControl(r) || unicode.Is(unicode.Cf, r), "forbidden rune %U", r)
+			}
+		}
+		_ = threat.Attributes{Name: "x", Description: &s}.Normalize().Validate(now)
+	})
 }

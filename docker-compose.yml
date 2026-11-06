@@ -61,7 +61,7 @@ services:
     command: ["devcerts", "-dir", "/certs", "-if-missing", "-owner", "65532",
               "-hosts", "localhost,127.0.0.1,::1,threat-exchange", "-client", "demo-client",
               "-db-dir", "/db-certs", "-db-hosts", "db", "-db-owner", "70"]
-    # Keep a stale healthcheck of the image from delaying a one-off job.
+    # One-off job: the healthcheck of the image is about the service.
     healthcheck:
       disable: true
     volumes:

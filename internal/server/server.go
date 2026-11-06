@@ -165,11 +165,12 @@ func (a *App) readyz(w http.ResponseWriter, r *http.Request) {
 
 // Serve listens on the configured addresses and blocks until ctx is done.
 func (a *App) Serve(ctx context.Context) error {
-	apiLn, err := net.Listen("tcp", a.cfg.HTTP.Addr)
+	var lc net.ListenConfig
+	apiLn, err := lc.Listen(ctx, "tcp", a.cfg.HTTP.Addr)
 	if err != nil {
 		return fmt.Errorf("listen API: %w", err)
 	}
-	opsLn, err := net.Listen("tcp", a.cfg.Ops.Addr)
+	opsLn, err := lc.Listen(ctx, "tcp", a.cfg.Ops.Addr)
 	if err != nil {
 		_ = apiLn.Close()
 		return fmt.Errorf("listen ops: %w", err)

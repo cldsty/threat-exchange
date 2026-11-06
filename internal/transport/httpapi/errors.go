@@ -120,7 +120,7 @@ func specFieldErrors(err error) []api.FieldError {
 // toFieldErrors walks the (possibly nested) error tree produced by
 // kin-openapi. prefix is the name of the enclosing parameter, if any.
 func toFieldErrors(err error, prefix string) []api.FieldError {
-	switch e := err.(type) {
+	switch e := err.(type) { //nolint:errorlint // wrapped errors are unwrapped below
 	case openapi3.MultiError:
 		var out []api.FieldError
 		for _, item := range e {

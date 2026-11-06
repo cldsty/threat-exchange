@@ -21,7 +21,9 @@ func TestKeygen(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	require.Len(t, lines, 2)
 	key := strings.TrimSpace(lines[0][strings.LastIndex(lines[0], ":")+1:])
-	entry := strings.TrimSpace(lines[1][strings.Index(lines[1], "partner-a"):])
+	_, after, found := strings.Cut(lines[1], "partner-a")
+	require.True(t, found, lines[1])
+	entry := "partner-a" + strings.TrimSpace(after)
 
 	ks, err := auth.ParseKeyStore(entry)
 	require.NoError(t, err, "printed entry is a valid AUTH_API_KEYS value")

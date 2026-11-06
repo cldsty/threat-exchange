@@ -288,20 +288,6 @@ func TestReloadAPIKeysFromFile(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, status("new-key"), "a broken file keeps the previous keys")
 }
 
-func TestStorageOutageEndToEnd(t *testing.T) {
-	t.Parallel()
-	srv := start(t, nil)
-	c := client(t, srv.certs, false, 0)
-	resp, _ := call(t, c, http.MethodPost, srv.apiURL+"/info", writerKey, `{"md5":"`+md5+`","name":"X"}`)
-	require.Equal(t, http.StatusCreated, resp.StatusCode)
-	// Stopping the temporary database in the middle is done by the pool test;
-	// here it is enough that health is independent of readiness.
-	r, err := http.Get(srv.opsURL + "/healthz")
-	require.NoError(t, err)
-	_ = r.Body.Close()
-	assert.Equal(t, http.StatusOK, r.StatusCode)
-}
-
 func TestTLSVersionPolicy(t *testing.T) {
 	t.Parallel()
 	srv := start(t, map[string]string{"TLS_MIN_VERSION": "1.3"})
@@ -360,7 +346,10 @@ func TestReadinessFailsWhenDatabaseIsDown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- app.ServeListeners(ctx, apiLn, opsLn) }()
-	defer func() { cancel(); <-done }()
+	defer func() {
+		cancel()
+		_ = <-done //nolint:staticcheck // the shutdown result does not matter here
+	}()
 
 	url := "http://" + opsLn.Addr().String() + "/readyz"
 	require.Eventually(t, func() bool {

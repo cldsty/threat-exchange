@@ -23,10 +23,10 @@ jobs:
       - name: Generated code is up to date
         run: make check-generate
       - name: go mod tidy is clean
-        run: go mod tidy && git diff --exit-code -- go.mod go.sum
+        run: go mod tidy -diff && (cd tools && go mod tidy -diff)
       - uses: golangci/golangci-lint-action@v8
         with:
-          version: v2.6
+          version: v2.15.0
 
   test:
     runs-on: ubuntu-latest
@@ -50,6 +50,8 @@ jobs:
         run: make test-integration
       - name: Coverage
         run: make cover
+      - name: Fuzz the parsers of untrusted input
+        run: make fuzz FUZZTIME=20s
       - uses: actions/upload-artifact@v4
         with:
           name: coverage
