@@ -13,8 +13,8 @@ zones, first/last seen, file size, the `X-API-Key` header.
 | Requirement | Implementation |
 |---|---|
 | REST server from the spec | [`api/openapi.yaml`](api/openapi.yaml) is the single source of truth; `GET /info/{md5}`, `POST /info`, `PUT /info/{md5}` |
-| Extended model, validation | 15 new fields ([model](#threat-model)); two-level validation: by the spec (kin-openapi) and business rules in the domain; database constraints as the last line of defence |
-| Unit and integration tests | Unit tests for every layer; integration tests with real PostgreSQL, TLS/mTLS and the fully assembled server; `-race`; ~88% coverage excluding generated code |
+| Extended model, validation | 16 new fields ([model](#threat-model)); two-level validation: by the spec (kin-openapi) and business rules in the domain; database constraints as the last line of defence |
+| Unit and integration tests | Unit tests for every layer; integration tests with real PostgreSQL, TLS/mTLS and the fully assembled server; `-race`; ~88% coverage excluding generated code; every HTTP test response is checked against the spec; fuzz tests of the parsers |
 | Docker | Multi-stage `Dockerfile` (distroless, non-root), `docker-compose.yml` (DB, migrations, certificates, service) |
 | DBMS and code generation | PostgreSQL + pgx, goose migrations embedded into the binary; `oapi-codegen` generates models, a strict server and the embedded spec |
 | Documentation | This README, [`docs/`](docs/) (architecture, security, decisions, in Russian), godoc comments |
@@ -28,8 +28,9 @@ Only Docker is required (Docker Desktop on Windows/macOS).
 docker compose up --build -d --wait
 ```
 
-Compose starts PostgreSQL, generates development certificates into
-`deploy/certs/`, applies migrations and serves on `https://localhost:8443`.
+Compose generates development certificates into `deploy/certs/`, starts
+PostgreSQL with TLS, applies migrations and serves on `https://localhost:8443`.
+All ports are published on localhost only, because the demo keys below are public.
 
 Demo keys (local use only):
 
@@ -65,10 +66,13 @@ Ops endpoints (localhost only): `http://127.0.0.1:8081/healthz`, `/readyz`,
 `/metrics`.
 
 If a port is taken (`ports are not available` error), choose another one via
-environment variables or an `.env` file (see `.env.example`): `DB_PORT` for
-PostgreSQL (default `5432`), `OPS_PORT` for the ops endpoints (default `8081`).
+environment variables or an `.env` file (see `.env.example`): `API_PORT` for the
+API (default `8443`), `DB_PORT` for PostgreSQL (`5432`), `OPS_PORT` for the ops
+endpoints (`8081`).
 
 Stop with `docker compose down` (database data stays in the `pgdata` volume).
+The database role of the service is created once, together with the volume, so
+after upgrading from an older version recreate it with `docker compose down -v`.
 
 ## API
 
@@ -77,9 +81,9 @@ See [`api/openapi.yaml`](api/openapi.yaml) for the full contract (it opens in
 
 | Method | Path | Role | Responses |
 |---|---|---|---|
-| `GET` | `/info/{md5}` | reader, writer | 200, 400, 401, 403, 404, 429, 500 |
-| `POST` | `/info` | writer | 201, 400, 401, 403, 409, 413, 429, 500 |
-| `PUT` | `/info/{md5}` | writer | 200, 400, 401, 403, 404, 412, 413, 429, 500 |
+| `GET`, `HEAD` | `/info/{md5}` | reader, writer | 200, 400, 401, 403, 404, 429, 500, 503 |
+| `POST` | `/info` | writer | 201, 400, 401, 403, 409, 413, 415, 429, 500, 503 |
+| `PUT` | `/info/{md5}` | writer | 200, 400, 401, 403, 404, 409, 412, 413, 415, 428, 429, 500, 503 |
 
 - **Authentication:** `X-API-Key` header; missing or wrong key → `401`,
   insufficient role → `403`.
@@ -88,8 +92,16 @@ See [`api/openapi.yaml`](api/openapi.yaml) for the full contract (it opens in
 - **Optimistic concurrency:** responses carry an `ETag` header with the
   record version number, e.g. `"2"`; with `If-Match`, a concurrent modification
   yields `412`.
-- **Compatibility:** a request following the original spec (`md5` + `name`)
-  works unchanged.
+- **Working on a shared record:** one MD5 has one record, and any `writer` may
+  change it. An organization with data about a known MD5 gets `409` on `POST`,
+  reads the record, merges the data and sends `PUT` with `If-Match`. A record
+  last modified by another key cannot be replaced without a specific version in
+  `If-Match`: the answer is `428`. All versions are kept in the `threat_history`
+  table. See `docs/security.md` for the risks of this model.
+- **Database outage:** `503` with `Retry-After`; the request can be retried.
+- **Compatibility:** the fields of the original spec are unchanged, `md5` and
+  `name` are enough to create and replace a record. New requirements: TLS, the
+  `X-API-Key` header and no unknown fields in the request body.
 - **Errors** share one format; `request_id` equals the `X-Request-ID` header
   and the log entry:
 
@@ -107,14 +119,16 @@ See [`api/openapi.yaml`](api/openapi.yaml) for the full contract (it opens in
 | Field | Required | Rules |
 |---|---|---|
 | `md5` | on create | 32 hex characters, any case, stored lower-case. In `PUT` taken from the path |
-| `sha1` / `sha256` | no | 40 / 64 hex characters, stored lower-case |
-| `name` | on create and replace | 1–255 characters, no surrounding whitespace or control characters (e.g. `Trojan.Win32.Generic`) |
-| `description` | no | 1–2000 characters, not whitespace-only |
+| `sha1` / `sha256` | no | 40 / 64 hex characters, stored lower-case. One `sha256` cannot belong to two records (`409`) |
+| `name` | on create and replace | 1–255 characters, no surrounding whitespace, control or invisible characters (e.g. `Trojan.Win32.Generic`) |
+| `description` | no | 1–2000 characters, not whitespace-only, no characters that change the text direction |
 | `types` | no | up to 12 unique values from the vocabulary, `[]` allowed: `virus, worm, trojan, backdoor, rootkit, exploit, ransomware, banker, downloader, dropper, spyware, stealer, miner, adware, riskware, hacktool, other` |
 | `zone` | no | `red` (malicious), `orange` (suspicious), `yellow` (adware/PUA), `green` (clean), `grey` (no data, default) |
 | `severity` | no | `unknown` (default), `low`, `medium`, `high`, `critical`; only `unknown` for `green`/`grey` |
 | `file_size` | no | integer ≥ 0, bytes |
-| `first_seen_at` / `last_seen_at` | no | RFC 3339 with time zone; not in the future; `last ≥ first` |
+| `first_seen_at` / `last_seen_at` | no | RFC 3339 with time zone; not before 1970 and not in the future; `last ≥ first` |
+| `tlp` | no | TLP 2.0 distribution label: `clear`, `green`, `amber` (default), `amber+strict`, `red`. The server stores it but does not restrict reads by it |
+| `confidence` | no | author's confidence in the assessment, integer from 0 to 100 |
 | `revoked` | no | retraction flag (false positive), default `false` |
 | `created_at` / `updated_at` | response only | set by the server |
 | `created_by` / `updated_by` | response only | API key ID (audit) |
@@ -129,6 +143,7 @@ reported at start-up and the process exits immediately.
 |---|---|---|
 | `DB_URL` / `DB_URL_FILE` | — (required) | PostgreSQL connection string |
 | `AUTH_API_KEYS` / `AUTH_API_KEYS_FILE` | — (required) | `id:role:sha256hex`, separated by commas or newlines |
+| `AUTH_BIND_CLIENT_CERT` | `false` | accept a key only with a client certificate whose Common Name equals the key `id` (needs `TLS_CLIENT_CA_FILE`) |
 | `TLS_ENABLED` | `true` | `false` only behind a TLS-terminating proxy |
 | `TLS_CERT_FILE`, `TLS_KEY_FILE` | — | server certificate and key (required with TLS) |
 | `TLS_CLIENT_CA_FILE` | — | enables mTLS: clients must present a certificate from this CA |
@@ -144,6 +159,7 @@ reported at start-up and the process exits immediately.
 | `RATE_LIMIT_KEY_RPS` / `RATE_LIMIT_KEY_BURST` | `20` / `40` | per-API-key limit |
 | `DB_MAX_CONNS`, `DB_MIN_CONNS` | `10`, `1` | connection pool size |
 | `DB_STATEMENT_TIMEOUT` | `5s` | server-side SQL statement timeout |
+| `DB_CONNECT_TIMEOUT` | `2s` | timeout of one attempt to connect to the database |
 | `MIGRATE_ON_START` | `false` | apply migrations on start (default: separate `migrate` command) |
 | `LOG_LEVEL` / `LOG_FORMAT` | `info` / `json` | log level and format |
 
@@ -158,6 +174,10 @@ docker compose run --rm --no-deps threat-exchange keygen -id partner-a -role wri
 Hand the key to the client over a secure channel; only the hashed entry goes
 into the configuration.
 
+When keys come from a file (`AUTH_API_KEYS_FILE`), `SIGHUP` rereads it without a
+restart. To replace a key smoothly, add the new one with the same `id` and role,
+wait for the client to switch and remove the old one: the audit trail stays intact.
+
 ## Development
 
 Requires Go 1.27+ and Docker. Main targets (`make help` lists all):
@@ -167,6 +187,7 @@ make generate          # regenerate code from api/openapi.yaml
 make test              # unit tests with -race
 make db-up             # PostgreSQL on localhost:5432
 make test-integration  # unit + integration tests
+make fuzz              # fuzz tests of the parsers of untrusted input
 make cover             # coverage report (coverage.html)
 make lint              # golangci-lint
 make up / make down    # whole stack in Docker
@@ -203,6 +224,7 @@ internal/ratelimit/            per-key/IP token bucket
 internal/server/               composition root, TLS, ops server, graceful shutdown
 internal/config/               environment configuration
 internal/devcerts/             development certificate generation (no openssl needed)
+deploy/postgres/               creation of the service's database role for compose
 docs/                          architecture, security, decisions
 ```
 
@@ -215,3 +237,9 @@ docs/                          architecture, security, decisions
   interface allows plugging in JWT without touching the HTTP layer).
 - No lookup by `sha1`/`sha256` and no paginated listing — not in the
   assignment, but the schema allows it.
+- The history of changes is available only in the database: the assignment has
+  no endpoint for it.
+- The `tlp` label reaches the readers, but the server does not restrict reads by
+  it: that needs keys tied to organizations and access levels.
+- One MD5 has one verdict. Separate reports per organization are described as
+  the next step in `docs/decisions.md`.
