@@ -36,7 +36,8 @@ docker compose up --build -d --wait
 ```
 
 Compose сгенерирует dev-сертификаты в `deploy/certs/`, поднимет PostgreSQL с
-TLS, применит миграции и запустит сервис на `https://localhost:8443`.
+TLS, применит миграции и запустит сервис на `https://localhost:8443`, а документацию
+API на `http://localhost:8090` (только чтение).
 
 Демо-ключи для локального запуска:
 
@@ -45,19 +46,13 @@ TLS, применит миграции и запустит сервис на `ht
 | `demo-writer-key-change-me` | `writer` - чтение и запись |
 | `demo-reader-key-change-me` | `reader` - только чтение |
 
-Открыть документацию API на `http://localhost:8090` (только чтение):
-
-```bash
-docker compose --profile docs up -d swagger
-```
-
 Остановить всё (данные БД сохранятся в volume `pgdata`):
 
 ```bash
-docker compose --profile docs down
+docker compose down
 ```
 
-Отдельные запросы: [примеры](#примеры-запросов). Если не запускается: [частые проблемы](#частые-проблемы).
+Отдельные запросы: [примеры](#примеры-запросов). Если не запускается: [возможные проблемы](#частые-проблемы).
 
 ## Сборка и запуск без Docker
 
@@ -125,21 +120,31 @@ bin/threat-exchange serve
 
 ### Примеры запросов
 
-Тела запросов лежат в [`examples/`](examples/), поэтому команды одинаковы на всех системах. На Windows см. [частые проблемы](#частые-проблемы).
+На Windows см. [возможные проблемы](#возможные-проблемы).
+
+Создать запись:
 
 ```bash
-curl --cacert deploy/certs/ca.crt https://localhost:8443/info -H "X-API-Key: demo-writer-key-change-me" -H "Content-Type: application/json" --data-binary "@examples/create.json"
+curl --cacert deploy/certs/ca.crt https://localhost:8443/info \
+  -H "X-API-Key: demo-writer-key-change-me" -H "Content-Type: application/json" \
+  -d '{"md5":"44d88612fea8a8f36de82e1278abb02f","name":"EICAR-Test-File",
+       "types":["other"],"zone":"red","severity":"low","tlp":"green","confidence":100}'
 ```
+
+Прочитать запись (регистр MD5 не важен):
 
 ```bash
-curl --cacert deploy/certs/ca.crt https://localhost:8443/info/44D88612FEA8A8F36DE82E1278ABB02F -H "X-API-Key: demo-reader-key-change-me"
+curl --cacert deploy/certs/ca.crt https://localhost:8443/info/44D88612FEA8A8F36DE82E1278ABB02F \
+  -H "X-API-Key: demo-reader-key-change-me"
 ```
+
+Полностью заменить запись с проверкой версии (`ETag` из предыдущего ответа):
 
 ```bash
-curl --cacert deploy/certs/ca.crt -X PUT https://localhost:8443/info/44d88612fea8a8f36de82e1278abb02f -H "X-API-Key: demo-writer-key-change-me" -H "Content-Type: application/json" -H "@examples/if-match.txt" --data-binary "@examples/replace.json"
+curl --cacert deploy/certs/ca.crt -X PUT https://localhost:8443/info/44d88612fea8a8f36de82e1278abb02f \
+  -H "X-API-Key: demo-writer-key-change-me" -H "Content-Type: application/json" \
+  -H 'If-Match: "1"' -d '{"name":"EICAR-Test-File","zone":"red","severity":"low","revoked":true}'
 ```
-
-Первая команда создаёт запись, вторая читает её (регистр MD5 не важен), третья полностью заменяет с проверкой версии.
 
 ### Служебные адреса
 
@@ -260,13 +265,13 @@ deploy/postgres/               создание роли сервиса в БД 
 docs/                          архитектура, безопасность, принятые решения
 ```
 
-## Частые проблемы
+## Возможные проблемы
 
 | Симптом | Решение |
 |---|---|
 | `ports are not available` | Порт занят. Скопируйте `.env.example` в `.env` и задайте другой: `API_PORT`, `DB_PORT`, `OPS_PORT`, `DOCS_PORT` |
 | `CERT_TRUST_REVOCATION_STATUS_UNKNOWN` в `curl` на Windows | Добавьте `--ssl-no-revoke`: dev-сертификат нельзя проверить на отзыв, доверие к `ca.crt` при этом проверяется |
-| `curl` в PowerShell работает иначе | Используйте `curl.exe` |
+| Примеры `curl` не работают в PowerShell | В PowerShell другие кавычки и переносы строк. Запускайте их в Git Bash или WSL |
 | Сервис не подключается к БД после обновления со старой версии | Роль сервиса создаётся один раз, вместе с volume. Пересоздайте его: `docker compose down -v`. Данные БД будут удалены |
 
 ## Документация

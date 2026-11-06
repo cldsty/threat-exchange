@@ -80,12 +80,12 @@ jobs:
           CURL="curl -sS --fail-with-body --cacert deploy/certs/ca.crt"
           $CURL https://localhost:8443/info \
             -H "X-API-Key: demo-writer-key-change-me" -H "Content-Type: application/json" \
-            --data-binary "@examples/create.json"
+            -d '{"md5":"44d88612fea8a8f36de82e1278abb02f","name":"EICAR-Test-File","zone":"red","severity":"low"}'
           $CURL https://localhost:8443/info/44d88612fea8a8f36de82e1278abb02f \
             -H "X-API-Key: demo-reader-key-change-me"
           $CURL -X PUT https://localhost:8443/info/44d88612fea8a8f36de82e1278abb02f \
             -H "X-API-Key: demo-writer-key-change-me" -H "Content-Type: application/json" \
-            -H "@examples/if-match.txt" --data-binary "@examples/replace.json"
+            -H 'If-Match: "1"' -d '{"name":"EICAR-Test-File","zone":"red","severity":"low","revoked":true}'
           curl -sS --fail http://127.0.0.1:8081/readyz
       - name: Scan image for vulnerabilities
         uses: aquasecurity/trivy-action@0.33.1

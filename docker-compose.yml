@@ -119,12 +119,11 @@ services:
     pids_limit: 128
     restart: unless-stopped
 
-  # API documentation: docker compose --profile docs up -d swagger
+  # API documentation on http://localhost:8090.
   # Read-only: sending requests from a browser would need CORS on the API and
   # trust in the development CA, which is not worth weakening the API for.
   swagger:
     image: swaggerapi/swagger-ui:v5.27.1
-    profiles: [docs]
     environment:
       SWAGGER_JSON: /spec/openapi.yaml
       SUPPORTED_SUBMIT_METHODS: "[]"
