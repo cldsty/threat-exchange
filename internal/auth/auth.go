@@ -26,8 +26,7 @@ import (
 	"sync/atomic"
 )
 
-// HeaderAPIKey is the request header that carries the API key. The same
-// header name is used by Kaspersky Threat Intelligence Portal.
+// HeaderAPIKey is the request header that carries the API key.
 const HeaderAPIKey = "X-API-Key" //nolint:gosec // a header name, not a credential
 
 // keyPrefix makes keys recognizable by secret scanners and humans.

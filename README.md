@@ -148,7 +148,7 @@ curl --cacert deploy/certs/ca.crt -X PUT https://localhost:8443/info/44d88612fea
 
 Все сценарии можно проверить через Postman: импортируйте
 [`postman/threat-exchange.postman_collection.json`](postman/threat-exchange.postman_collection.json),
-укажите `deploy/certs/ca.crt` в Settings → Certificates → CA Certificates и запустите
+укажите `deploy/certs/ca.crt` в Settings - App settings - Certificates - CA Certificates и запустите
 коллекцию целиком.
 
 ### Служебные адреса
