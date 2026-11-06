@@ -1,0 +1,11 @@
+# Configuration for github.com/oapi-codegen/oapi-codegen.
+# Regenerate with `make generate` (or `go generate ./...`).
+package: api
+output: api.gen.go  # relative to internal/api (go:generate runs there)
+generate:
+  models: true
+  std-http-server: true
+  strict-server: true
+  embedded-spec: true
+output-options:
+  skip-prune: false

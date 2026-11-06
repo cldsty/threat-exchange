@@ -1,0 +1,11 @@
+/bin/
+coverage.out
+coverage.nogen.out
+coverage.html
+.env
+.idea/
+.vscode/
+
+# Development certificates are generated locally, never committed.
+/deploy/certs/*
+!/deploy/certs/.gitkeep

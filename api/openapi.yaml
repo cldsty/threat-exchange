@@ -1,0 +1,530 @@
+openapi: 3.0.3
+info:
+  title: Information Exchange Service
+  description: |
+    API для обмена информацией об угрозах.
+
+    Модель угрозы расширена по сравнению с исходной спецификацией и частично
+    ориентирована на Kaspersky Threat Intelligence Portal (цветовые зоны,
+    first/last seen, размер файла). Исходный контракт сохранён: клиент,
+    передающий только `md5` и `name`, продолжает работать.
+
+    ## Аутентификация и роли
+    Каждый запрос должен содержать заголовок `X-API-Key`. Ключу на сервере
+    сопоставлена роль:
+
+    | Роль     | Разрешено                 |
+    |----------|---------------------------|
+    | `reader` | `GET`                     |
+    | `writer` | `GET`, `POST`, `PUT`      |
+
+    ## Ограничение частоты запросов
+    При превышении лимита возвращается `429` и заголовок `Retry-After`.
+
+    ## Оптимистичная блокировка
+    Ответы содержат заголовок `ETag` с версией записи. `PUT` принимает
+    необязательный `If-Match`: если запись успела измениться, возвращается `412`.
+  version: 1.1.0
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://localhost:8443
+    description: Локальный запуск через docker compose
+
+security:
+  - ApiKeyAuth: []
+
+tags:
+  - name: threats
+    description: Информация об угрозах
+
+paths:
+  /info/{md5}:
+    parameters:
+      - $ref: '#/components/parameters/Md5Path'
+    get:
+      tags: [threats]
+      summary: Получить информацию об угрозе по MD5
+      description: Возвращает полную информацию об угрозе для указанного MD5-хеша. Регистр MD5 не важен.
+      operationId: getInfoByMd5
+      responses:
+        '200':
+          description: Успешный ответ с информацией об угрозе
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ThreatResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    put:
+      tags: [threats]
+      summary: Обновить информацию об угрозе по MD5
+      description: |
+        Полностью заменяет информацию о существующей угрозе (семантика замены):
+        необязательные поля, не переданные в запросе, сбрасываются к значениям
+        по умолчанию. MD5 берётся из пути и не может быть передан в теле.
+      operationId: updateThreat
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ThreatUpdateRequest'
+      responses:
+        '200':
+          description: Информация успешно обновлена
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ThreatResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /info:
+    post:
+      tags: [threats]
+      summary: Создать новую запись об угрозе
+      description: Добавляет новую информацию об угрозе. MD5 должен быть уникальным (без учёта регистра).
+      operationId: createThreat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ThreatCreateRequest'
+      responses:
+        '201':
+          description: Запись успешно создана
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Location:
+              description: Адрес созданной записи
+              schema:
+                type: string
+                example: /info/d41d8cd98f00b204e9800998ecf8427e
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ThreatResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Угроза с таким MD5 уже существует
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API-ключ клиента. На сервере хранится только SHA-256 хеш ключа.
+
+  parameters:
+    Md5Path:
+      name: md5
+      in: path
+      required: true
+      description: MD5-хеш файла (32 символа, шестнадцатеричные цифры)
+      schema:
+        $ref: '#/components/schemas/Md5'
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      description: |
+        Версия записи из заголовка `ETag`, например `"3"`. Значение `*`
+        означает «любая существующая версия».
+      schema:
+        type: string
+        maxLength: 32
+        example: '"3"'
+
+  headers:
+    ETag:
+      description: Версия записи (строгий ETag), например `"3"`
+      schema:
+        type: string
+        example: '"3"'
+
+  responses:
+    BadRequest:
+      description: Некорректные данные запроса или MD5
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: API-ключ не передан или неверен
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Роли ключа недостаточно для операции
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Угроза с указанным MD5 не найдена
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PreconditionFailed:
+      description: Версия в `If-Match` не совпадает с текущей версией записи
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PayloadTooLarge:
+      description: Тело запроса превышает допустимый размер
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    TooManyRequests:
+      description: Превышен лимит запросов
+      headers:
+        Retry-After:
+          description: Через сколько секунд можно повторить запрос
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: Внутренняя ошибка сервера
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    Md5:
+      type: string
+      pattern: '^[a-fA-F0-9]{32}$'
+      description: MD5-хеш файла (32 шестнадцатеричных символа). Хранится в нижнем регистре.
+      example: "d41d8cd98f00b204e9800998ecf8427e"
+
+    Sha1:
+      type: string
+      pattern: '^[a-fA-F0-9]{40}$'
+      description: SHA-1 хеш файла (40 шестнадцатеричных символов). Хранится в нижнем регистре.
+      example: "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+
+    Sha256:
+      type: string
+      pattern: '^[a-fA-F0-9]{64}$'
+      description: SHA-256 хеш файла (64 шестнадцатеричных символа). Хранится в нижнем регистре.
+      example: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+    ThreatName:
+      type: string
+      minLength: 1
+      maxLength: 255
+      # Без пробелов по краям и без управляющих символов.
+      pattern: '^[^\s\x00-\x1F\x7F](?:[^\x00-\x1F\x7F]*[^\s\x00-\x1F\x7F])?$'
+      description: |
+        Название угрозы (детект), например в формате Kaspersky
+        `[Prefix:]Behaviour.Platform.Name[.Variant]`. Жёсткая проверка формата
+        не выполняется, так как в обмене встречаются имена других вендоров.
+        Пробелы по краям и управляющие символы запрещены.
+      example: "Trojan.Win32.Generic"
+
+    Description:
+      type: string
+      minLength: 1
+      maxLength: 2000
+      # Хотя бы один непробельный символ; из управляющих разрешены только \t, \n, \r.
+      pattern: '^[^\x00-\x08\x0B\x0C\x0E-\x1F\x7F]*[^\s\x00-\x1F\x7F][^\x00-\x08\x0B\x0C\x0E-\x1F\x7F]*$'
+      description: Описание угрозы в свободной форме. Строка из одних пробелов недопустима.
+      example: "Троянская программа, загружающая дополнительные модули."
+
+    ThreatType:
+      type: string
+      description: Категория угрозы (по классификации поведения Kaspersky).
+      enum:
+        - virus
+        - worm
+        - trojan
+        - backdoor
+        - rootkit
+        - exploit
+        - ransomware
+        - banker
+        - downloader
+        - dropper
+        - spyware
+        - stealer
+        - miner
+        - adware
+        - riskware
+        - hacktool
+        - other
+
+    ThreatTypes:
+      type: array
+      maxItems: 12
+      uniqueItems: true
+      description: Категории угрозы, без повторов. Пустой массив допустим.
+      items:
+        $ref: '#/components/schemas/ThreatType'
+      example: [trojan, downloader]
+
+    Zone:
+      type: string
+      description: |
+        Цветовая зона по аналогии с Kaspersky Threat Intelligence Portal:
+        `red` — вредоносный объект; `orange` — подозрительный;
+        `yellow` — рекламное и другое нежелательное ПО;
+        `green` — угроз не обнаружено; `grey` — данных недостаточно.
+      enum: [red, orange, yellow, green, grey]
+      default: grey
+      example: red
+
+    Severity:
+      type: string
+      description: |
+        Уровень опасности. `unknown` — не оценено. Для зон `green` и `grey`
+        допустимо только `unknown`.
+      enum: [unknown, low, medium, high, critical]
+      default: unknown
+      example: high
+
+    FileSize:
+      type: integer
+      format: int64
+      minimum: 0
+      description: Размер файла в байтах.
+      example: 73802
+
+    SeenAt:
+      type: string
+      format: date-time
+      description: Дата и время в формате RFC 3339 с часовым поясом. Не может быть в будущем.
+      example: "2026-01-15T10:30:00Z"
+
+    ThreatCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - md5
+        - name
+      properties:
+        md5:
+          $ref: '#/components/schemas/Md5'
+        sha1:
+          $ref: '#/components/schemas/Sha1'
+        sha256:
+          $ref: '#/components/schemas/Sha256'
+        name:
+          $ref: '#/components/schemas/ThreatName'
+        description:
+          $ref: '#/components/schemas/Description'
+        types:
+          $ref: '#/components/schemas/ThreatTypes'
+        zone:
+          $ref: '#/components/schemas/Zone'
+        severity:
+          $ref: '#/components/schemas/Severity'
+        file_size:
+          $ref: '#/components/schemas/FileSize'
+        first_seen_at:
+          $ref: '#/components/schemas/SeenAt'
+        last_seen_at:
+          $ref: '#/components/schemas/SeenAt'
+        revoked:
+          type: boolean
+          default: false
+          description: Признак отзыва информации (например, ложное срабатывание).
+
+    ThreatUpdateRequest:
+      type: object
+      additionalProperties: false
+      description: Полная замена данных угрозы. MD5 передаётся в пути.
+      required:
+        - name
+      properties:
+        sha1:
+          $ref: '#/components/schemas/Sha1'
+        sha256:
+          $ref: '#/components/schemas/Sha256'
+        name:
+          $ref: '#/components/schemas/ThreatName'
+        description:
+          $ref: '#/components/schemas/Description'
+        types:
+          $ref: '#/components/schemas/ThreatTypes'
+        zone:
+          $ref: '#/components/schemas/Zone'
+        severity:
+          $ref: '#/components/schemas/Severity'
+        file_size:
+          $ref: '#/components/schemas/FileSize'
+        first_seen_at:
+          $ref: '#/components/schemas/SeenAt'
+        last_seen_at:
+          $ref: '#/components/schemas/SeenAt'
+        revoked:
+          type: boolean
+          default: false
+          description: Признак отзыва информации (например, ложное срабатывание).
+
+    ThreatResponse:
+      type: object
+      required:
+        - md5
+        - name
+        - types
+        - zone
+        - severity
+        - revoked
+        - created_at
+        - updated_at
+        - created_by
+        - updated_by
+      description: Необязательные поля, не заданные для записи, в ответе отсутствуют.
+      properties:
+        md5:
+          $ref: '#/components/schemas/Md5'
+        sha1:
+          $ref: '#/components/schemas/Sha1'
+        sha256:
+          $ref: '#/components/schemas/Sha256'
+        name:
+          $ref: '#/components/schemas/ThreatName'
+        description:
+          $ref: '#/components/schemas/Description'
+        types:
+          $ref: '#/components/schemas/ThreatTypes'
+        zone:
+          $ref: '#/components/schemas/Zone'
+        severity:
+          $ref: '#/components/schemas/Severity'
+        file_size:
+          $ref: '#/components/schemas/FileSize'
+        first_seen_at:
+          $ref: '#/components/schemas/SeenAt'
+        last_seen_at:
+          $ref: '#/components/schemas/SeenAt'
+        revoked:
+          type: boolean
+          description: Признак отзыва информации.
+        created_at:
+          type: string
+          format: date-time
+          description: Время создания записи (устанавливает сервер).
+        updated_at:
+          type: string
+          format: date-time
+          description: Время последнего изменения (устанавливает сервер).
+        created_by:
+          type: string
+          description: Идентификатор API-ключа, создавшего запись.
+          example: "partner-a"
+        updated_by:
+          type: string
+          description: Идентификатор API-ключа, последним изменившего запись.
+          example: "partner-a"
+
+    ErrorResponse:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          description: Машиночитаемый код ошибки.
+          enum:
+            - bad_request
+            - validation_failed
+            - unauthorized
+            - forbidden
+            - not_found
+            - method_not_allowed
+            - conflict
+            - precondition_failed
+            - payload_too_large
+            - rate_limited
+            - internal
+          example: not_found
+        message:
+          type: string
+          description: Человекочитаемое описание ошибки
+          example: "Threat not found"
+        details:
+          type: string
+          description: Дополнительная информация
+          example: "No threat with MD5 d41d8cd98f00b204e9800998ecf8427e found"
+        fields:
+          type: array
+          description: Ошибки валидации по отдельным полям.
+          items:
+            $ref: '#/components/schemas/FieldError'
+        request_id:
+          type: string
+          description: Идентификатор запроса для поиска в логах.
+          example: "0f8fad5b-d9cb-469f-a165-70867728950e"
+
+    FieldError:
+      type: object
+      required: [field, message]
+      properties:
+        field:
+          type: string
+          example: last_seen_at
+        message:
+          type: string
+          example: must not be earlier than first_seen_at

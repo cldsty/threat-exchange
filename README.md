@@ -1,0 +1,224 @@
+# Threat Exchange Service
+
+**Русский** | [English](README.en.md)
+
+Веб-сервис с REST API для обмена информацией об угрозах (по MD5-хешу файла).
+Реализован на Go по OpenAPI-спецификации из тестового задания. Модель угрозы
+расширена и частично ориентирована на
+[Kaspersky Threat Intelligence Portal](https://opentip.kaspersky.com/): цветовые
+зоны, first/last seen, размер файла, заголовок `X-API-Key`.
+
+## Что сделано
+
+| Требование задания | Реализация |
+|---|---|
+| REST-сервер по спецификации | [`api/openapi.yaml`](api/openapi.yaml) — единый источник правды; `GET /info/{md5}`, `POST /info`, `PUT /info/{md5}` |
+| Дополнение полей и валидация | 15 новых полей ([модель](#модель-угрозы)); двухуровневая валидация: по спецификации (kin-openapi) и бизнес-правила в домене; ограничения в БД как последний рубеж |
+| Юнит- и интеграционные тесты | Юнит-тесты всех слоёв; интеграционные — реальный PostgreSQL, TLS/mTLS, весь сервер целиком; `-race`; покрытие ~88% без сгенерированного кода |
+| Docker | Многоэтапный `Dockerfile` (distroless, non-root), `docker-compose.yml` (БД, миграции, сертификаты, сервис) |
+| СУБД и кодогенерация по спеке | PostgreSQL + pgx, миграции goose (встроены в бинарник); `oapi-codegen` генерирует модели, strict-сервер и встроенную спецификацию |
+| Документация | Этот README, [`docs/`](docs/) (архитектура, безопасность, решения), godoc-комментарии |
+| Дополнительная защита | TLS 1.2+/1.3, опционально mTLS, ротация сертификата без перезапуска; API-ключи с ролями (хранятся только хеши); rate-limit по IP и по ключу; лимиты размера и таймауты; security-заголовки; отдельный служебный порт |
+
+## Быстрый старт
+
+Нужен только Docker (Docker Desktop на Windows/macOS).
+
+```bash
+docker compose up --build -d --wait
+```
+
+Compose поднимет PostgreSQL, сгенерирует dev-сертификаты в `deploy/certs/`,
+применит миграции и запустит сервис на `https://localhost:8443`.
+
+Демо-ключи (только для локального запуска):
+
+| Ключ | Роль |
+|---|---|
+| `demo-writer-key-change-me` | `writer` — чтение и запись |
+| `demo-reader-key-change-me` | `reader` — только чтение |
+
+```bash
+# Создать запись
+curl --cacert deploy/certs/ca.crt https://localhost:8443/info \
+  -H "X-API-Key: demo-writer-key-change-me" -H "Content-Type: application/json" \
+  -d '{"md5":"44d88612fea8a8f36de82e1278abb02f","name":"EICAR-Test-File",
+       "types":["other"],"zone":"red","severity":"low"}'
+
+# Прочитать (регистр MD5 не важен)
+curl --cacert deploy/certs/ca.crt -H "X-API-Key: demo-reader-key-change-me" \
+  https://localhost:8443/info/44D88612FEA8A8F36DE82E1278ABB02F
+
+# Полностью заменить с проверкой версии (ETag из предыдущего ответа)
+curl --cacert deploy/certs/ca.crt -X PUT https://localhost:8443/info/44d88612fea8a8f36de82e1278abb02f \
+  -H "X-API-Key: demo-writer-key-change-me" -H "Content-Type: application/json" \
+  -H 'If-Match: "1"' -d '{"name":"EICAR-Test-File","zone":"red","severity":"low","revoked":true}'
+```
+
+> **Windows (PowerShell):** используйте `curl.exe` вместо `curl` и экранируйте
+> кавычки в JSON, либо отправляйте запросы из Postman/Insomnia, импортировав
+> `api/openapi.yaml`. Встроенный в Windows `curl.exe` не может проверить отзыв
+> dev-сертификата (`CERT_TRUST_REVOCATION_STATUS_UNKNOWN`) — добавьте
+> `--ssl-no-revoke`; доверие к `ca.crt` при этом проверяется.
+
+Служебные эндпоинты (только с localhost): `http://127.0.0.1:8081/healthz`,
+`/readyz`, `/metrics`.
+
+Если порт занят (ошибка `ports are not available`), задайте другой через
+переменные окружения или файл `.env` (см. `.env.example`): `DB_PORT` для
+PostgreSQL (по умолчанию `5432`), `OPS_PORT` для служебных эндпоинтов
+(по умолчанию `8081`).
+
+Остановить: `docker compose down` (данные БД сохранятся в volume `pgdata`).
+
+## API
+
+Полное описание — в [`api/openapi.yaml`](api/openapi.yaml) (можно открыть в
+[Swagger Editor](https://editor.swagger.io/)).
+
+| Метод | Путь | Роль | Ответы |
+|---|---|---|---|
+| `GET` | `/info/{md5}` | reader, writer | 200, 400, 401, 403, 404, 429, 500 |
+| `POST` | `/info` | writer | 201, 400, 401, 403, 409, 413, 429, 500 |
+| `PUT` | `/info/{md5}` | writer | 200, 400, 401, 403, 404, 412, 413, 429, 500 |
+
+- **Аутентификация:** заголовок `X-API-Key`; без ключа или с неверным — `401`,
+  без прав — `403`.
+- **`PUT` — полная замена:** необязательные поля, не переданные в запросе,
+  сбрасываются к значениям по умолчанию. MD5 берётся из пути; в теле он запрещён.
+- **Оптимистичная блокировка:** ответы содержат заголовок `ETag` с номером
+  версии записи, например `"2"`. Если передать `If-Match`, а запись уже изменили, вернётся `412`.
+- **Совместимость:** запрос из исходной спецификации (`md5` + `name`) работает
+  без изменений.
+- **Ошибки** имеют единый формат; `request_id` совпадает с заголовком
+  `X-Request-ID` и с записью в логе:
+
+```json
+{
+  "code": "validation_failed",
+  "message": "Request validation failed",
+  "fields": [{ "field": "last_seen_at", "message": "must not be earlier than first_seen_at" }],
+  "request_id": "0f8fad5b-d9cb-469f-a165-70867728950e"
+}
+```
+
+### Модель угрозы
+
+| Поле | Обязательность | Правила |
+|---|---|---|
+| `md5` | при создании | 32 hex-символа; любой регистр, хранится в нижнем. В `PUT` — из пути |
+| `sha1` / `sha256` | нет | 40 / 64 hex-символа; хранится в нижнем регистре |
+| `name` | при создании и замене | 1–255 символов, без пробелов по краям и управляющих символов (например, `Trojan.Win32.Generic`) |
+| `description` | нет | 1–2000 символов, не из одних пробелов |
+| `types` | нет | до 12 значений из словаря без повторов, `[]` допустим: `virus, worm, trojan, backdoor, rootkit, exploit, ransomware, banker, downloader, dropper, spyware, stealer, miner, adware, riskware, hacktool, other` |
+| `zone` | нет | `red` (вредоносный), `orange` (подозрительный), `yellow` (рекламное/нежелательное ПО), `green` (угроз нет), `grey` (нет данных, по умолчанию) |
+| `severity` | нет | `unknown` (по умолчанию), `low`, `medium`, `high`, `critical`; для `green`/`grey` — только `unknown` |
+| `file_size` | нет | целое ≥ 0, байты |
+| `first_seen_at` / `last_seen_at` | нет | RFC 3339 с часовым поясом; не в будущем; `last ≥ first` |
+| `revoked` | нет | признак отзыва (ложное срабатывание), по умолчанию `false` |
+| `created_at` / `updated_at` | только в ответе | ставит сервер |
+| `created_by` / `updated_by` | только в ответе | ID API-ключа (аудит) |
+
+Почему поля именно такие — см. [`docs/decisions.md`](docs/decisions.md).
+
+## Конфигурация
+
+Все настройки — переменные окружения. Секреты можно передать файлом
+(`*_FILE`), что удобно для Docker/Kubernetes secrets. Неверная конфигурация
+обнаруживается при старте, сервис сразу завершается с понятной ошибкой.
+
+| Переменная | По умолчанию | Описание |
+|---|---|---|
+| `DB_URL` / `DB_URL_FILE` | — (обязательна) | строка подключения PostgreSQL |
+| `AUTH_API_KEYS` / `AUTH_API_KEYS_FILE` | — (обязательна) | `id:role:sha256hex` через запятую или перевод строки |
+| `TLS_ENABLED` | `true` | `false` — только за TLS-терминирующим прокси |
+| `TLS_CERT_FILE`, `TLS_KEY_FILE` | — | сертификат и ключ сервера (обязательны при TLS) |
+| `TLS_CLIENT_CA_FILE` | — | включает mTLS: клиент обязан предъявить сертификат этого CA |
+| `TLS_MIN_VERSION` | `1.2` | `1.2` или `1.3` |
+| `HTTP_ADDR` / `OPS_ADDR` | `:8443` / `:8081` | адреса API и служебного сервера |
+| `HTTP_MAX_BODY_BYTES` | `65536` | максимальный размер тела запроса |
+| `HTTP_READ_HEADER_TIMEOUT`, `HTTP_READ_TIMEOUT`, `HTTP_WRITE_TIMEOUT`, `HTTP_IDLE_TIMEOUT` | `5s`, `10s`, `15s`, `60s` | таймауты сервера |
+| `HTTP_HANDLER_TIMEOUT` | `10s` | лимит обработки запроса (распространяется на запросы к БД) |
+| `HTTP_SHUTDOWN_TIMEOUT` | `15s` | время на завершение запросов при остановке |
+| `HTTP_TRUSTED_PROXIES` | — | CIDR прокси, которым можно доверять `X-Forwarded-For` |
+| `RATE_LIMIT_ENABLED` | `true` | включить ограничение частоты |
+| `RATE_LIMIT_IP_RPS` / `RATE_LIMIT_IP_BURST` | `50` / `100` | лимит на IP (до аутентификации) |
+| `RATE_LIMIT_KEY_RPS` / `RATE_LIMIT_KEY_BURST` | `20` / `40` | лимит на API-ключ |
+| `DB_MAX_CONNS`, `DB_MIN_CONNS` | `10`, `1` | размер пула соединений |
+| `DB_STATEMENT_TIMEOUT` | `5s` | серверный таймаут SQL-запроса |
+| `MIGRATE_ON_START` | `false` | применять миграции при старте (по умолчанию — отдельной командой `migrate`) |
+| `LOG_LEVEL` / `LOG_FORMAT` | `info` / `json` | уровень и формат логов |
+
+### Управление ключами
+
+```bash
+docker compose run --rm --no-deps threat-exchange keygen -id partner-a -role writer
+# API key (give to the client, shown once): tx_...
+# Config entry for AUTH_API_KEYS:        partner-a:writer:5e88...
+```
+
+Ключ передаётся клиенту по защищённому каналу, в конфиг попадает только строка с хешем.
+
+## Разработка
+
+Нужны Go 1.27+ и Docker. Основные команды (`make help` — полный список):
+
+```bash
+make generate          # перегенерировать код из api/openapi.yaml
+make test              # юнит-тесты с -race
+make db-up             # поднять PostgreSQL на localhost:5432
+make test-integration  # юнит + интеграционные тесты
+make cover             # отчёт о покрытии (coverage.html)
+make lint              # golangci-lint
+make up / make down    # весь стек в Docker
+```
+
+Без `make` (например, на Windows):
+
+```bash
+go test -race ./...
+docker compose up -d --wait db
+# PowerShell: $env:TEST_DB_URL="postgres://threats:threats-dev-password@127.0.0.1:5432/threats?sslmode=disable"
+TEST_DB_URL=postgres://threats:threats-dev-password@127.0.0.1:5432/threats?sslmode=disable \
+  go test -race -tags integration ./...
+```
+
+Если PostgreSQL запущен на другом порту (`DB_PORT`), укажите его и в `TEST_DB_URL`.
+
+Интеграционные тесты создают для каждого теста отдельную временную базу и
+удаляют её после теста, поэтому их можно запускать параллельно на общем сервере.
+
+### Структура проекта
+
+```
+api/openapi.yaml               спецификация (источник правды) + конфиг oapi-codegen
+cmd/threat-exchange/           точка входа: serve, migrate, keygen, devcerts, healthcheck
+internal/api/                  код, сгенерированный из спецификации (не редактируется)
+internal/domain/threat/        сущность, перечисления, бизнес-валидация, ошибки
+internal/service/              сценарии использования (Get/Create/Replace)
+internal/storage/postgres/     репозиторий на pgx + встроенные миграции
+internal/storage/memory/       in-memory репозиторий для юнит-тестов
+internal/transport/httpapi/    обработчики, маппинг DTO, middleware
+internal/auth/                 API-ключи, роли
+internal/ratelimit/            token bucket на ключ/IP
+internal/server/               сборка приложения, TLS, служебный сервер, graceful shutdown
+internal/config/               конфигурация из окружения
+internal/devcerts/             генерация dev-сертификатов (без openssl)
+docs/                          архитектура, безопасность, принятые решения
+```
+
+## Документация
+
+- [Архитектура](docs/architecture.md) — слои, путь запроса, обработка ошибок.
+- [Безопасность](docs/security.md) — модель угроз, принятые меры, рекомендации для продакшена.
+- [Решения](docs/decisions.md) — почему выбраны именно эти поля, библиотеки и подходы.
+
+## Ограничения и что можно развить
+
+- Rate-limit хранится в памяти процесса: при нескольких репликах нужен общий
+  стор (Redis) или лимит на уровне API-gateway.
+- Ключи задаются конфигурацией; для большого числа партнёров — хранить в БД
+  с API управления, либо перейти на OAuth 2.0 (интерфейс `auth.Authenticator`
+  позволяет подключить JWT без изменения HTTP-слоя).
+- Нет поиска по `sha1`/`sha256` и списков с пагинацией — в задании их нет,
+  но схема БД это допускает.

@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Generated code is up to date
+        run: make check-generate
+      - name: go mod tidy is clean
+        run: go mod tidy && git diff --exit-code -- go.mod go.sum
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.6
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: threats
+          POSTGRES_PASSWORD: threats-dev-password
+          POSTGRES_DB: threats
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U threats"
+          --health-interval 3s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Unit and integration tests (race detector)
+        run: make test-integration
+      - name: Coverage
+        run: make cover
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.html
+
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start the stack
+        run: docker compose up --build -d --wait
+      - name: Smoke test
+        run: |
+          set -eu
+          CURL="curl -sS --fail-with-body --cacert deploy/certs/ca.crt"
+          $CURL -X POST https://localhost:8443/info \
+            -H "X-API-Key: demo-writer-key-change-me" -H "Content-Type: application/json" \
+            -d '{"md5":"44d88612fea8a8f36de82e1278abb02f","name":"EICAR-Test-File","zone":"red","severity":"low"}'
+          $CURL https://localhost:8443/info/44d88612fea8a8f36de82e1278abb02f \
+            -H "X-API-Key: demo-reader-key-change-me"
+          curl -sS --fail http://127.0.0.1:8081/readyz
+      - name: Scan image for vulnerabilities
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: threat-exchange:local
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs

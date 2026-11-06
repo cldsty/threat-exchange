@@ -1,0 +1,95 @@
+# Local environment: PostgreSQL + migrations + the service over HTTPS.
+#
+#   docker compose up --build -d
+#   curl --cacert deploy/certs/ca.crt -H "X-API-Key: demo-reader-key-change-me" \
+#        https://localhost:8443/info/d41d8cd98f00b204e9800998ecf8427e
+#
+# The demo API keys and the database password below are for local use only.
+# For any shared environment generate keys with `threat-exchange keygen`,
+# pass secrets via files (AUTH_API_KEYS_FILE, DB_URL_FILE) and use
+# certificates issued by your PKI.
+
+name: threat-exchange
+
+x-app-image: &app-image
+  image: threat-exchange:local
+  build:
+    context: .
+    args:
+      VERSION: ${VERSION:-dev}
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: threats
+      POSTGRES_USER: threats
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-threats-dev-password}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Published on localhost only, for integration tests and debugging.
+    ports:
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U threats -d threats"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # Generates development certificates into ./deploy/certs once.
+  # Runs as root only to hand the server key over to the non-root app user.
+  certs:
+    <<: *app-image
+    user: "0:0"
+    command: ["devcerts", "-dir", "/certs", "-if-missing", "-owner", "65532",
+              "-hosts", "localhost,127.0.0.1,::1,threat-exchange", "-client", "demo-client"]
+    volumes:
+      - ./deploy/certs:/certs
+    restart: "no"
+
+  migrate:
+    <<: *app-image
+    command: ["migrate"]
+    environment:
+      DB_URL: postgres://threats:${POSTGRES_PASSWORD:-threats-dev-password}@db:5432/threats?sslmode=disable
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  threat-exchange:
+    <<: *app-image
+    command: ["serve"]
+    environment:
+      DB_URL: postgres://threats:${POSTGRES_PASSWORD:-threats-dev-password}@db:5432/threats?sslmode=disable
+      # Format: id:role:sha256(key). Plain demo keys: demo-writer-key-change-me / demo-reader-key-change-me
+      AUTH_API_KEYS: >-
+        demo-writer:writer:915e589fd1bb71fd397f2b3cdbfe485feac7d6c467276a6d5630ab2e16f45344,
+        demo-reader:reader:704d0c11fdd1b8ce4a3b466fbc7bfd3f9f18265f20d05d2a3d0e713fa196e14f
+      TLS_CERT_FILE: /certs/server.crt
+      TLS_KEY_FILE: /certs/server.key
+      # Uncomment to require client certificates (mutual TLS):
+      # TLS_CLIENT_CA_FILE: /certs/ca.crt
+      LOG_LEVEL: info
+    ports:
+      - "8443:8443"
+      # Ops endpoints (health, metrics) are bound to localhost only.
+      - "127.0.0.1:${OPS_PORT:-8081}:8081"
+    volumes:
+      - ./deploy/certs:/certs:ro
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    # Container hardening.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    pids_limit: 128
+    restart: unless-stopped
+
+volumes:
+  pgdata:
