@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -699,8 +700,12 @@ func FuzzClientIP(f *testing.F) {
 		r.RemoteAddr = remote
 		direct := c.Resolve(r)
 		r.Header.Set("X-Forwarded-For", xff)
-		peer, err := netip.ParseAddrPort(remote)
-		if err != nil || !trusted.Contains(peer.Addr().Unmap()) {
+		host, _, err := net.SplitHostPort(remote)
+		if err != nil {
+			host = remote
+		}
+		peer, err := netip.ParseAddr(host)
+		if err != nil || !trusted.Contains(peer.Unmap()) {
 			assert.Equal(t, direct, c.Resolve(r), "an untrusted peer cannot spoof its address")
 		}
 		_ = c.LimitKey(r) // must not panic on any input
