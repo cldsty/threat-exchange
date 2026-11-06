@@ -1,7 +1,7 @@
 # Threat Exchange Service
 
 Веб-сервис с REST API для обмена информацией об угрозах.
-Реализован на Go по OpenAPI-спецификации из тестового задания. 
+Реализован на Go по OpenAPI-спецификации.
 
 ## Что сделано
 
@@ -24,62 +24,47 @@
 | База данных | PostgreSQL 17, драйвер `pgx`, миграции `goose` |
 | Защита | TLS/mTLS, API-ключи, rate-limit на `golang.org/x/time/rate` |
 | Наблюдаемость | Логи `log/slog` в JSON, метрики Prometheus |
-| Развёртывание | Docker (образ distroless), Docker Compose |
+| Развёртывание | Docker, Docker Compose |
 | Качество | `testify`, `-race`, fuzz-тесты, `golangci-lint`, `govulncheck`, Trivy, GitHub Actions |
 
 ## Быстрый старт
 
-Нужен только Docker (Docker Desktop на Windows/macOS).
+Нужен Docker (Docker Desktop на Windows/macOS).
 
 ```bash
 docker compose up --build -d --wait
 ```
 
 Compose сгенерирует dev-сертификаты в `deploy/certs/`, поднимет PostgreSQL с
-TLS, применит миграции и запустит сервис на `https://localhost:8443`. Все порты
-опубликованы только на localhost, потому что демо-ключи ниже общеизвестны.
+TLS, применит миграции и запустит сервис на `https://localhost:8443`.
 
-Демо-ключи (только для локального запуска):
+Демо-ключи для локального запуска:
 
 | Ключ | Роль |
 |---|---|
 | `demo-writer-key-change-me` | `writer` - чтение и запись |
+| `demo-partner-key-change-me` | `writer` - второй участник обмена |
 | `demo-reader-key-change-me` | `reader` - только чтение |
 
+Посмотреть работу сервиса: сценарий с двумя организациями, каждый ответ проверяется автоматически.
+
 ```bash
-# Создать запись
-curl --cacert deploy/certs/ca.crt https://localhost:8443/info \
-  -H "X-API-Key: demo-writer-key-change-me" -H "Content-Type: application/json" \
-  -d '{"md5":"44d88612fea8a8f36de82e1278abb02f","name":"EICAR-Test-File",
-       "types":["other"],"zone":"red","severity":"low"}'
-
-# Прочитать (регистр MD5 не важен)
-curl --cacert deploy/certs/ca.crt -H "X-API-Key: demo-reader-key-change-me" \
-  https://localhost:8443/info/44D88612FEA8A8F36DE82E1278ABB02F
-
-# Полностью заменить с проверкой версии (ETag из предыдущего ответа)
-curl --cacert deploy/certs/ca.crt -X PUT https://localhost:8443/info/44d88612fea8a8f36de82e1278abb02f \
-  -H "X-API-Key: demo-writer-key-change-me" -H "Content-Type: application/json" \
-  -H 'If-Match: "1"' -d '{"name":"EICAR-Test-File","zone":"red","severity":"low","revoked":true}'
+docker compose run --rm demo
 ```
 
-> **Windows (PowerShell):** используйте `curl.exe` вместо `curl` и экранируйте
-> кавычки в JSON, либо отправляйте запросы из Postman/Insomnia, импортировав
-> `api/openapi.yaml`. Встроенный в Windows `curl.exe` не может проверить отзыв
-> dev-сертификата (`CERT_TRUST_REVOCATION_STATUS_UNKNOWN`) - добавьте
-> `--ssl-no-revoke`, доверие к `ca.crt` при этом проверяется.
+Открыть документацию API на `http://localhost:8090` (только чтение):
 
-Служебные эндпоинты (только с localhost): `http://127.0.0.1:8081/healthz`,
-`/readyz`, `/metrics`.
+```bash
+docker compose --profile docs up -d swagger
+```
 
-Если порт занят (ошибка `ports are not available`), задайте другой через
-переменные окружения или файл `.env` (см. `.env.example`): `API_PORT` для API
-(по умолчанию `8443`), `DB_PORT` для PostgreSQL (`5432`), `OPS_PORT` для
-служебных эндпоинтов (`8081`).
+Остановить всё (данные БД сохранятся в volume `pgdata`):
 
-Остановить: `docker compose down` (данные БД сохранятся в volume `pgdata`).
-Роль сервиса в БД создаётся один раз, при создании volume, поэтому после
-обновления со старой версии нужно пересоздать его: `docker compose down -v`.
+```bash
+docker compose --profile docs down
+```
+
+Отдельные запросы: [примеры](#примеры-запросов). Если не запускается: [частые проблемы](#частые-проблемы).
 
 ## Сборка и запуск без Docker
 
@@ -144,6 +129,28 @@ bin/threat-exchange serve
   "request_id": "0f8fad5b-d9cb-469f-a165-70867728950e"
 }
 ```
+
+### Примеры запросов
+
+Тела запросов лежат в [`examples/`](examples/), поэтому команды одинаковы на всех системах. На Windows см. [частые проблемы](#частые-проблемы).
+
+```bash
+curl --cacert deploy/certs/ca.crt https://localhost:8443/info -H "X-API-Key: demo-writer-key-change-me" -H "Content-Type: application/json" --data-binary "@examples/create.json"
+```
+
+```bash
+curl --cacert deploy/certs/ca.crt https://localhost:8443/info/44D88612FEA8A8F36DE82E1278ABB02F -H "X-API-Key: demo-reader-key-change-me"
+```
+
+```bash
+curl --cacert deploy/certs/ca.crt -X PUT https://localhost:8443/info/44d88612fea8a8f36de82e1278abb02f -H "X-API-Key: demo-writer-key-change-me" -H "Content-Type: application/json" -H "@examples/if-match.txt" --data-binary "@examples/replace.json"
+```
+
+Первая команда создаёт запись, вторая читает её (регистр MD5 не важен), третья полностью заменяет с проверкой версии.
+
+### Служебные адреса
+
+`http://127.0.0.1:8081/healthz`, `/readyz` и `/metrics` доступны только с localhost.
 
 ### Модель угрозы
 
@@ -259,6 +266,15 @@ internal/devcerts/             генерация dev-сертификатов (
 deploy/postgres/               создание роли сервиса в БД для compose
 docs/                          архитектура, безопасность, принятые решения
 ```
+
+## Частые проблемы
+
+| Симптом | Решение |
+|---|---|
+| `ports are not available` | Порт занят. Скопируйте `.env.example` в `.env` и задайте другой: `API_PORT`, `DB_PORT`, `OPS_PORT`, `DOCS_PORT` |
+| `CERT_TRUST_REVOCATION_STATUS_UNKNOWN` в `curl` на Windows | Добавьте `--ssl-no-revoke`: dev-сертификат нельзя проверить на отзыв, доверие к `ca.crt` при этом проверяется |
+| `curl` в PowerShell работает иначе | Используйте `curl.exe` |
+| Сервис не подключается к БД после обновления со старой версии | Роль сервиса создаётся один раз, вместе с volume. Пересоздайте его: `docker compose down -v`. Данные БД будут удалены |
 
 ## Документация
 

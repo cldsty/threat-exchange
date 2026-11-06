@@ -1,0 +1,9 @@
+{
+  "md5": "44d88612fea8a8f36de82e1278abb02f",
+  "name": "EICAR-Test-File",
+  "types": ["other"],
+  "zone": "red",
+  "severity": "low",
+  "tlp": "green",
+  "confidence": 100
+}

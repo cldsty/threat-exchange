@@ -89,9 +89,11 @@ services:
     command: ["serve"]
     environment:
       DB_URL: postgres://threats_app:${APP_DB_PASSWORD:-threats-app-dev-password}@db:5432/threats?sslmode=verify-full&sslrootcert=/certs/ca.crt
-      # Format: id:role:sha256(key). Plain demo keys: demo-writer-key-change-me / demo-reader-key-change-me
+      # Format: id:role:sha256(key). Plain demo keys: demo-writer-key-change-me,
+      # demo-partner-key-change-me (a second organization) and demo-reader-key-change-me
       AUTH_API_KEYS: >-
         demo-writer:writer:915e589fd1bb71fd397f2b3cdbfe485feac7d6c467276a6d5630ab2e16f45344,
+        demo-partner:writer:fbf417589e5811819fb0e3bab01c241ec0499699e914a12c237eb29349a29b6d,
         demo-reader:reader:704d0c11fdd1b8ce4a3b466fbc7bfd3f9f18265f20d05d2a3d0e713fa196e14f
       TLS_CERT_FILE: /certs/server.crt
       TLS_KEY_FILE: /certs/server.key
@@ -118,6 +120,35 @@ services:
     mem_limit: 256m
     pids_limit: 128
     restart: unless-stopped
+
+  # Scenario of work with the API, checks every answer: docker compose run --rm demo
+  demo:
+    image: curlimages/curl:8.16.0
+    profiles: [demo]
+    entrypoint: ["sh", "/demo/demo.sh"]
+    volumes:
+      - ./deploy/demo:/demo:ro
+      - ./deploy/certs:/certs:ro
+    depends_on:
+      threat-exchange:
+        condition: service_healthy
+    restart: "no"
+
+  # API documentation: docker compose --profile docs up -d swagger
+  # Read-only: sending requests from a browser would need CORS on the API and
+  # trust in the development CA, which is not worth weakening the API for.
+  swagger:
+    image: swaggerapi/swagger-ui:v5.27.1
+    profiles: [docs]
+    environment:
+      SWAGGER_JSON: /spec/openapi.yaml
+      SUPPORTED_SUBMIT_METHODS: "[]"
+      VALIDATOR_URL: "none"
+    volumes:
+      - ./api/openapi.yaml:/spec/openapi.yaml:ro
+    ports:
+      - "127.0.0.1:${DOCS_PORT:-8090}:8080"
+    restart: "no"
 
 volumes:
   pgdata:
