@@ -7,23 +7,20 @@ flowchart LR
     client([Клиент]) -->|HTTPS| http
 
     subgraph app[Сервис]
-        api["internal/api<br/>сгенерированный код"]
         http["transport/httpapi<br/>middleware, обработчики"]
         service["service<br/>сценарии"]
         repo["storage/postgres<br/>репозиторий"]
         domain["domain/threat<br/>сущность, правила"]
 
-        api -.-> http
         http --> service
         service --> repo
         service --> domain
     end
 
     repo -->|TLS| db[(PostgreSQL)]
-    spec[/"api/openapi.yaml"/] -.->|генерация| api
 ```
 
-Сплошные стрелки показывают ход запроса, пунктирные - код из спецификации.
+Стрелки показывают ход запроса.
 
 Импорты в коде устроены иначе, чем ход запроса: `domain` ни от кого не зависит, его импортируют
 `httpapi`, `service` и `postgres`. Интерфейс `Repository` объявлен в `service`, а `postgres`
