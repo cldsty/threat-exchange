@@ -20,6 +20,18 @@ zones, first/last seen, file size, the `X-API-Key` header.
 | Documentation | This README, [`docs/`](docs/) (architecture, security, decisions, in Russian), godoc comments |
 | Extra protection | TLS 1.2+/1.3, optional mTLS, certificate rotation without restart; role-based API keys (only hashes are stored); rate limiting per IP and per key; size limits and timeouts; security headers; separate ops port |
 
+## Technology stack
+
+| Purpose | Technologies |
+|---|---|
+| Language and HTTP | Go 1.27, standard `net/http` |
+| API and code generation | OpenAPI 3.0, `oapi-codegen`, request validation with `kin-openapi` |
+| Database | PostgreSQL 17, `pgx` driver, `goose` migrations |
+| Security | TLS/mTLS, API keys, rate limiting with `golang.org/x/time/rate` |
+| Observability | JSON logs with `log/slog`, Prometheus metrics |
+| Deployment | Docker (distroless image), Docker Compose |
+| Quality | `testify`, `-race`, fuzz tests, `golangci-lint`, `govulncheck`, Trivy, GitHub Actions |
+
 ## Quick start
 
 Only Docker is required (Docker Desktop on Windows/macOS).
@@ -73,6 +85,30 @@ endpoints (`8081`).
 Stop with `docker compose down` (database data stays in the `pgdata` volume).
 The database role of the service is created once, together with the volume, so
 after upgrading from an older version recreate it with `docker compose down -v`.
+
+## Build and run without Docker
+
+Requires Go 1.27+ and PostgreSQL.
+
+```bash
+# Build (on Windows without make: go build -o bin/threat-exchange.exe ./cmd/threat-exchange)
+make build
+
+# Development certificates and an API key
+bin/threat-exchange devcerts -dir deploy/certs
+bin/threat-exchange keygen -id partner-a -role writer
+
+# Configuration: use your database address and the Config entry line printed by keygen
+export DB_URL="postgres://user:password@localhost:5432/threats?sslmode=disable"
+export AUTH_API_KEYS="partner-a:writer:..."
+export TLS_CERT_FILE=deploy/certs/server.crt TLS_KEY_FILE=deploy/certs/server.key
+
+# Migrations and start
+bin/threat-exchange migrate
+bin/threat-exchange serve
+```
+
+To build only the Docker image: `docker build -t threat-exchange:local .`
 
 ## API
 
