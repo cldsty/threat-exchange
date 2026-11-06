@@ -33,12 +33,14 @@ type Config struct {
 // NewHandler assembles the public API handler. Middleware order matters and
 // is, from outermost to innermost:
 //
-//	request ID → panic recovery → metrics/access log → security headers →
+//	request ID → metrics/access log → panic recovery → security headers →
 //	per-IP rate limit → authentication → per-key rate limit →
 //	authorization → body size limit → OpenAPI validation → handlers
 //
-// Unauthenticated and unauthorized requests are rejected before the body is
-// read or validated, so anonymous clients learn nothing about the schema.
+// Panic recovery sits inside the access log so that recovered requests are
+// still counted and logged as 500. Unauthenticated and unauthorized requests
+// are rejected before the body is read or validated, so anonymous clients
+// learn nothing about the schema.
 func NewHandler(c Config) (http.Handler, error) {
 	if c.Service == nil || c.Authenticator == nil || c.Logger == nil || c.Metrics == nil {
 		return nil, fmt.Errorf("httpapi: missing required dependency")
@@ -88,11 +90,11 @@ func NewHandler(c Config) (http.Handler, error) {
 	}
 	h = authenticate(c.Authenticator, c.Logger, c.Metrics)(h)
 	if c.IPLimiter != nil {
-		h = rateLimit(c.IPLimiter, "ip", c.ClientIP.Resolve, c.Metrics)(h)
+		h = rateLimit(c.IPLimiter, "ip", c.ClientIP.LimitKey, c.Metrics)(h)
 	}
 	h = securityHeaders(h)
-	h = observe(c.Logger, c.Metrics)(h)
 	h = recoverer(c.Logger, c.Metrics)(h)
+	h = observe(c.Logger, c.Metrics, c.ClientIP)(h)
 	h = requestContext(mux)(h)
 	return h, nil
 }

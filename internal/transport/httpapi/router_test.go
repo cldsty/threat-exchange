@@ -55,7 +55,7 @@ func newEnv(t *testing.T, opts ...option) *env {
 		Service:       service.New(memory.New(clock), service.ClockFunc(clock)),
 		Authenticator: keys,
 		MaxBodyBytes:  4 << 10,
-		Logger:        slog.New(slog.NewJSONHandler(logs, nil)),
+		Logger:        slog.New(observability.NewLogHandler(slog.NewJSONHandler(logs, nil))),
 		Metrics:       observability.NewMetrics(),
 	}
 	for _, o := range opts {
@@ -434,6 +434,34 @@ func TestAccessLogAndMetrics(t *testing.T) {
 	assert.Equal(t, "reader", entry["principal"])
 	assert.EqualValues(t, 404, entry["status"])
 	assert.Equal(t, "GET /info/{md5}", entry["route"])
+	assert.Equal(t, "192.0.2.1", entry["client_ip"])
+}
+
+func TestLogsCarryRequestID(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, func(c *httpapi.Config) { c.Service = failingService{} })
+	r := e.do(http.MethodGet, "/info/"+md5, readerKey, "", httpapi.HeaderRequestID, "trace-42")
+	assert.Equal(t, "trace-42", *r.errorBody(t).RequestId)
+
+	seen := map[any]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(e.logs.String()), "\n") {
+		var entry map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &entry))
+		assert.Equal(t, "trace-42", entry["request_id"], line)
+		seen[entry["msg"]] = true
+	}
+	assert.True(t, seen["request failed"], "the failure can be found by the ID given to the client")
+	assert.True(t, seen["http request"], "so can the access log entry")
+}
+
+func TestMetricsDoNotGrowWithArbitraryMethods(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	for _, method := range []string{"AAA", "BBB", "CCC"} {
+		assert.Equal(t, http.StatusUnauthorized, e.do(method, "/x", "", "").StatusCode)
+	}
+	assert.Equal(t, 1, testutil.CollectAndCount(e.metrics.RequestsTotal), "unknown methods share one label")
+	assert.InDelta(t, 3, testutil.ToFloat64(e.metrics.RequestsTotal.WithLabelValues("OTHER", "unmatched", "401")), 0)
 }
 
 type panickingService struct{ httpapi.ThreatService }
@@ -453,6 +481,9 @@ func TestPanicIsRecovered(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, r.StatusCode)
 	assert.Equal(t, api.ErrorResponseCodeInternal, r.errorBody(t).Code)
 	assert.InDelta(t, 1, testutil.ToFloat64(e.metrics.PanicsTotal), 0)
+	assert.InDelta(t, 1, testutil.ToFloat64(
+		e.metrics.RequestsTotal.WithLabelValues("GET", "GET /info/{md5}", "500")), 0, "panics count as 500s")
+	assert.Contains(t, e.logs.String(), `"msg":"http request"`, "and reach the access log")
 }
 
 func TestInternalErrorsAreNotLeaked(t *testing.T) {
@@ -469,6 +500,25 @@ func TestNewHandlerRequiresDependencies(t *testing.T) {
 	t.Parallel()
 	_, err := httpapi.NewHandler(httpapi.Config{})
 	assert.Error(t, err)
+}
+
+func TestClientIPLimitKey(t *testing.T) {
+	t.Parallel()
+	c := httpapi.NewClientIP(nil)
+	tests := []struct{ name, remote, want string }{
+		{"ipv4 stays an address", "203.0.113.7:5000", "203.0.113.7"},
+		{"ipv6 is reduced to /64", "[2001:db8:1:2:3:4:5:6]:443", "2001:db8:1:2::/64"},
+		{"another address of the same /64", "[2001:db8:1:2:aaaa::1]:443", "2001:db8:1:2::/64"},
+		{"mapped ipv4", "[::ffff:203.0.113.7]:443", "203.0.113.7"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.RemoteAddr = tt.remote
+			assert.Equal(t, tt.want, c.LimitKey(r))
+		})
+	}
 }
 
 func TestClientIP(t *testing.T) {

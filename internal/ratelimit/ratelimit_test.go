@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -84,6 +85,46 @@ func TestMaxKeysUsesOverflowBucket(t *testing.T) {
 	ok, _ = l.Allow("d")
 	assert.False(t, ok, "overflow keys share one bucket")
 	assert.LessOrEqual(t, l.Len(), 3, "memory is bounded")
+}
+
+func TestIdleBucketIsReusedAtCapacity(t *testing.T) {
+	t.Parallel()
+	l, clock := newTest(Config{Rate: 1, Burst: 1, MaxKeys: 2, IdleTTL: time.Minute})
+	l.Allow("old")
+	clock.Advance(2 * time.Minute)
+	l.Allow("recent")
+
+	ok, _ := l.Allow("new")
+	assert.True(t, ok, "the idle bucket makes room for a new key")
+	assert.Equal(t, 2, l.Len())
+
+	ok, _ = l.Allow("recent")
+	assert.False(t, ok, "the recently used bucket is kept with its state")
+}
+
+func TestRecentUseProtectsBucketFromEviction(t *testing.T) {
+	t.Parallel()
+	l, clock := newTest(Config{Rate: 1, Burst: 1, IdleTTL: time.Minute})
+	l.Allow("a")
+	l.Allow("b")
+	clock.Advance(40 * time.Second)
+	l.Allow("a")
+	clock.Advance(40 * time.Second)
+	l.Cleanup()
+	assert.Equal(t, 1, l.Len(), "only b has been idle for longer than the TTL")
+}
+
+// BenchmarkNewKeyAtCapacity guards against the cost of a flood of new source
+// addresses growing with the number of tracked keys.
+func BenchmarkNewKeyAtCapacity(b *testing.B) {
+	l := New(Config{Rate: 50, Burst: 100, IdleTTL: 10 * time.Minute, MaxKeys: 100_000})
+	for i := range 100_000 {
+		l.Allow(strconv.Itoa(i))
+	}
+	b.ResetTimer()
+	for i := range b.N {
+		l.Allow("new" + strconv.Itoa(i))
+	}
 }
 
 func TestRetryAfterSeconds(t *testing.T) {

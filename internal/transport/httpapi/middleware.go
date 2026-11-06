@@ -24,13 +24,15 @@ import (
 // HeaderRequestID carries the request correlation ID.
 const HeaderRequestID = "X-Request-ID"
 
+// routeUnmatched is the route label of requests that match no route.
+const routeUnmatched = "unmatched"
+
 var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
 // requestInfo is shared by the middleware chain through the context. Inner
 // middleware fills fields (e.g. principal) that outer middleware (access log)
 // reads after the request completes.
 type requestInfo struct {
-	id        string
 	principal string
 	route     string
 }
@@ -46,10 +48,7 @@ func infoFrom(ctx context.Context) *requestInfo {
 
 // RequestIDFrom returns the request ID stored in ctx, if any.
 func RequestIDFrom(ctx context.Context) string {
-	if ri := infoFrom(ctx); ri != nil {
-		return ri.id
-	}
-	return ""
+	return observability.RequestID(ctx)
 }
 
 // statusRecorder captures the response status code.
@@ -88,11 +87,12 @@ func requestContext(mux *http.ServeMux) func(http.Handler) http.Handler {
 				id = uuid.NewString()
 			}
 			w.Header().Set(HeaderRequestID, id)
-			ri := &requestInfo{id: id, route: "unmatched"}
+			ri := &requestInfo{route: routeUnmatched}
 			if _, pattern := mux.Handler(r); pattern != "" {
 				ri.route = pattern
 			}
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestInfoKey{}, ri)))
+			ctx := observability.WithRequestID(r.Context(), id)
+			next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, requestInfoKey{}, ri)))
 		})
 	}
 }
@@ -125,7 +125,7 @@ func recoverer(logger *slog.Logger, m *observability.Metrics) func(http.Handler)
 
 // observe records metrics and writes a structured access log entry.
 // API keys and request bodies are never logged.
-func observe(logger *slog.Logger, m *observability.Metrics) func(http.Handler) http.Handler {
+func observe(logger *slog.Logger, m *observability.Metrics, clientIP *ClientIP) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
@@ -136,13 +136,14 @@ func observe(logger *slog.Logger, m *observability.Metrics) func(http.Handler) h
 			next.ServeHTTP(rec, r)
 
 			elapsed := time.Since(start)
-			route := "unmatched"
+			route := routeUnmatched
 			principal := ""
 			if ri := infoFrom(r.Context()); ri != nil {
 				route, principal = ri.route, ri.principal
 			}
-			m.RequestsTotal.WithLabelValues(r.Method, route, strconv.Itoa(rec.status)).Inc()
-			m.RequestDuration.WithLabelValues(r.Method, route).Observe(elapsed.Seconds())
+			method := metricMethod(r.Method)
+			m.RequestsTotal.WithLabelValues(method, route, strconv.Itoa(rec.status)).Inc()
+			m.RequestDuration.WithLabelValues(method, route).Observe(elapsed.Seconds())
 
 			level := slog.LevelInfo
 			if rec.status >= 500 {
@@ -157,11 +158,24 @@ func observe(logger *slog.Logger, m *observability.Metrics) func(http.Handler) h
 				slog.Int("status", rec.status),
 				slog.Duration("duration", elapsed),
 				slog.String("principal", principal),
+				slog.String("client_ip", clientIP.Resolve(r)),
 				slog.String("remote", r.RemoteAddr),
 				slog.String("user_agent", r.UserAgent()),
 			)
 		})
 	}
+}
+
+// metricMethod maps the request method to a metric label. HTTP allows
+// arbitrary method tokens, so using them directly would let an anonymous client
+// create an unbounded number of time series and exhaust the memory.
+func metricMethod(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch,
+		http.MethodDelete, http.MethodOptions, http.MethodConnect, http.MethodTrace:
+		return method
+	}
+	return "OTHER"
 }
 
 // securityHeaders sets defensive response headers. The API serves only JSON,
@@ -299,6 +313,18 @@ func (c *ClientIP) Resolve(r *http.Request) string {
 		}
 	}
 	return peer.String()
+}
+
+// LimitKey returns the rate limiting key of r: the client IP, reduced to its
+// /64 network for IPv6. A single IPv6 subscriber usually controls a whole /64,
+// so limiting by address would be trivial to bypass.
+func (c *ClientIP) LimitKey(r *http.Request) string {
+	ip := c.Resolve(r)
+	addr, err := netip.ParseAddr(ip)
+	if err != nil || !addr.Is6() {
+		return ip
+	}
+	return netip.PrefixFrom(addr.WithZone(""), 64).Masked().String()
 }
 
 func (c *ClientIP) isTrusted(a netip.Addr) bool {

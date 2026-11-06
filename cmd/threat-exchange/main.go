@@ -31,6 +31,7 @@ import (
 	"threat-exchange/internal/auth"
 	"threat-exchange/internal/config"
 	"threat-exchange/internal/devcerts"
+	"threat-exchange/internal/observability"
 	"threat-exchange/internal/server"
 	"threat-exchange/internal/storage/postgres"
 )
@@ -94,7 +95,8 @@ func newLogger(c config.Log) (*slog.Logger, error) {
 	if c.Format == "text" {
 		h = slog.NewTextHandler(os.Stdout, opts)
 	}
-	return slog.New(h).With(slog.String("service", "threat-exchange"), slog.String("app_version", version)), nil
+	return slog.New(observability.NewLogHandler(h)).
+		With(slog.String("service", "threat-exchange"), slog.String("app_version", version)), nil
 }
 
 func signalContext() (context.Context, context.CancelFunc) {
